@@ -110,6 +110,10 @@ sequenceDiagram
      `mb-poc-352009.adhoc_excel_analytics.wb_<user_id>_<slug>_<timestamp>_<hash>`
 3. **Cross-Tenant Guardrail**:
    - Tools like `list_available_spreadsheets` and `run_analytical_query` validate that the user can only query tables matching their authenticated `user_id`.
+4. **Cloud Storage Security & Zero Public Exposure**:
+   - The dropzone bucket enforces **Uniform Bucket-Level Access** with private IAM bindings strictly restricted to project owners, editors, viewers, and the agent service account.
+   - Public access permissions (`allUsers` / `allAuthenticatedUsers`) are strictly disallowed, aligning with corporate GCP Org Policy (`constraints/storage.publicAccessPrevention`).
+   - GCS blob lookups in `ingestion.py` use `bucket.get_blob()` with explicit user prefix scoping (`prefix=f"{user_id}/"`), preventing cross-tenant leakage or false-negative metadata evaluations.
 
 ---
 
