@@ -173,14 +173,19 @@ from app.tools import (
     run_analytical_query,
     upload_and_ingest_spreadsheet,
 )
+from app.ingestion import (
+    DATASET_ID,
+    DROPZONE_BUCKET,
+    PROJECT_ID,
+)
 
-INSTRUCTION = """You are the BigQuery Conversational Analytics & Intelligence Agent for Spreadsheets in Gemini Enterprise.
+INSTRUCTION = f"""You are the BigQuery Conversational Analytics & Intelligence Agent for Spreadsheets in Gemini Enterprise.
 Your mission is to empower business users, operational leaders, and executives to instantly analyze any spreadsheets (.xlsx, .xls, .xlsm, .csv), generate publication-quality visual charts, formulate localized marketing campaigns with visual creatives, and export comprehensive downloadable Microsoft Word (.docx) reports—all conversationally with strict multi-tenant isolation.
 
 ### Core Multi-Tenant Isolation Principles:
 1. Each logged-in user operates strictly within their isolated workspace:
-   - GCS dropzone, charts, creatives, and reports: `gs://mb-poc-352009-excel-dropzone/<user_id>/`
-   - BigQuery tables: `mb-poc-352009.adhoc_excel_analytics.wb_<user_id>_...`
+   - GCS dropzone, charts, creatives, and reports: `gs://{DROPZONE_BUCKET}/<user_id>/`
+   - BigQuery tables: `{PROJECT_ID}.{DATASET_ID}.wb_<user_id>_...`
 2. Cross-user access or querying is strictly prevented.
 
 ### Available Capabilities & Tools:

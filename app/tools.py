@@ -160,7 +160,7 @@ def upload_and_ingest_spreadsheet(
     tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
     """Uploads a spreadsheet file (.xlsx, .xls, .xlsm, .csv) directly from the conversation
-    into the user's isolated Cloud Storage directory (gs://mb-poc-352009-excel-dropzone/{user_id}/{filename})
+    into the user's isolated Cloud Storage directory (gs://<dropzone_bucket>/{user_id}/{filename})
     and immediately flattens all sheets into BigQuery ephemeral tables with a 2-hour TTL.
 
     Args:
@@ -227,7 +227,7 @@ def upload_and_ingest_spreadsheet(
 def list_dropzone_files(tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Lists spreadsheet files available in the current user's isolated dropzone directory
 
-    (gs://mb-poc-352009-excel-dropzone/{user_id}/). Users only see files uploaded in their own directory.
+    (gs://<dropzone_bucket>/{user_id}/). Users only see files uploaded in their own directory.
 
     Returns:
         A dict containing status, dropzone bucket name, user directory, file count, and list of files.
@@ -253,7 +253,7 @@ def ingest_spreadsheet(
     Cloud Storage directory into BigQuery ephemeral tables with a 2-hour TTL.
 
     Args:
-        filename_or_gcs_uri: The filename (e.g. q1_financials.xlsx) or full GCS URI (gs://mb-poc-352009-excel-dropzone/{user_id}/q1_financials.xlsx).
+        filename_or_gcs_uri: The filename (e.g. q1_financials.xlsx) or full GCS URI (gs://<dropzone_bucket>/{user_id}/q1_financials.xlsx).
 
     Returns:
         A dict containing the workbook ID, generated BigQuery tables for each sheet, row counts, and column names.
@@ -418,7 +418,7 @@ def run_analytical_query(
     Only SELECT and WITH statements are allowed. Queries attempting to access other users' tables are blocked.
 
     Args:
-        query: The read-only GoogleSQL query to execute (e.g. SELECT category, SUM(amount) FROM `mb-poc-352009.adhoc_excel_analytics.wb_user_...` GROUP BY 1).
+        query: The read-only GoogleSQL query to execute (e.g. SELECT category, SUM(amount) FROM `<project>.<dataset>.wb_user_...` GROUP BY 1).
 
     Returns:
         A dict containing status, row_count, columns, and data rows on success, or status ERROR with available table schemas on failure.

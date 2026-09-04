@@ -24,7 +24,7 @@ This module intercepts incoming spreadsheet files from Gemini Enterprise chat,
 uploads them into the user's isolated GCS directory:
   gs://{DROPZONE_BUCKET}/{user_id}/{filename}
 flattens them into BigQuery ephemeral tables:
-  mb-poc-352009.adhoc_excel_analytics.wb_{user_id}_{sheet} (2-Hour TTL)
+  {PROJECT_ID}.{DATASET_ID}.wb_{user_id}_{sheet} (2-Hour TTL)
 and substitutes the unsupported binary Part with an informative text prompt
 containing table names, schemas, and preview rows for the Agent to query.
 """
