@@ -16,7 +16,7 @@ def mock_storage_upload():
     with patch("app.tools.upload_user_artifact_to_gcs") as mock_upload:
         mock_upload.side_effect = lambda user_id, subfolder, filename, data_bytes, content_type: (
             f"gs://mb-poc-352009-excel-dropzone/{user_id}/{subfolder}/{filename}",
-            f"https://storage.cloud.google.com/mb-poc-352009-excel-dropzone/{user_id}/{subfolder}/{filename}",
+            f"https://storage.googleapis.com/mb-poc-352009-excel-dropzone/{user_id}/{subfolder}/{filename}",
         )
         yield mock_upload
 
@@ -52,7 +52,7 @@ def test_generate_chart_visualization_line(mock_storage_upload):
     )
     assert res["status"] == "SUCCESS"
     assert "Month-by-Month" in res["title"]
-    assert res["chart_url"].startswith("https://storage.cloud.google.com/")
+    assert res["chart_url"].startswith("https://storage.googleapis.com/")
     assert res["markdown_image"].startswith("![")
     assert mock_storage_upload.called
 
@@ -218,7 +218,7 @@ def test_export_word_document_report(mock_storage_upload):
     assert res["status"] == "SUCCESS"
     assert res["filename"].endswith(".docx")
     assert res["file_size_kb"] > 0
-    assert res["download_url"].startswith("https://storage.cloud.google.com/")
+    assert res["download_url"].startswith("https://storage.googleapis.com/")
 
 
 def test_domain_seasonality_sql_validation():

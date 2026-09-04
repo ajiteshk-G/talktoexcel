@@ -254,7 +254,7 @@ def upload_user_artifact_to_gcs(
     blob = bucket.blob(blob_name)
     blob.upload_from_string(data_bytes, content_type=content_type)
     gcs_uri = f"gs://{bucket_name}/{blob_name}"
-    web_url = f"https://storage.cloud.google.com/{bucket_name}/{blob_name}"
+    web_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
     logger.info(f"Uploaded user artifact to: {gcs_uri}")
     return gcs_uri, web_url
 

@@ -668,7 +668,7 @@ def generate_chart_visualization(
             "chart_url": web_url,
             "markdown_image": f"![{title}]({web_url})",
             "file_size_kb": round(len(img_bytes) / 1024, 1),
-            "message": f"Successfully rendered '{title}' ({chart_type}) chart.",
+            "message": f"Successfully rendered '{title}' ({chart_type}) chart. Embed and display the chart image directly on screen in your response using: ![{title}]({web_url})",
         }
     except Exception as e:
         logger.exception(f"Chart generation failed: {e}")
@@ -853,7 +853,7 @@ def generate_marketing_creative(
             "markdown_image": f"![{title}]({web_url})",
             "file_size_kb": round(len(img_bytes) / 1024, 1),
             "model_used": model_name,
-            "message": f"Successfully generated commercial marketing creative for {brand_name} ({region_name}) using Gemini.",
+            "message": f"Successfully generated commercial marketing creative for {brand_name} ({region_name}) using Gemini. Embed and display the creative image directly on screen in your response using: ![{title}]({web_url})",
             # Backward-compatibility fields:
             "target_state": region_name,
             "regional_language": lang_name,
