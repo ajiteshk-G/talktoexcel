@@ -486,7 +486,7 @@ def run_analytical_query(
         return err_response
 
 
-def generate_chart_visualization(
+async def generate_chart_visualization(
     chart_type: str,
     title: str,
     labels: List[str],
@@ -499,6 +499,7 @@ def generate_chart_visualization(
 ) -> Dict[str, Any]:
     """Generates an executive-ready chart visualization (line, bar, horizontal_bar, stacked_bar, pie)
     from analytical data, uploads the high-res PNG to the user's isolated Cloud Storage directory,
+    saves the image as an ADK session artifact for native Gemini Enterprise rendering,
     and returns viewable links and markdown image formatting for Gemini Enterprise chat.
 
     Args:
@@ -659,23 +660,33 @@ def generate_chart_visualization(
             content_type="image/png",
         )
 
+        # Save as ADK session artifact for native Gemini Enterprise inline rendering
+        if tool_context and hasattr(tool_context, "save_artifact"):
+            try:
+                part = types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                await tool_context.save_artifact(filename=filename, artifact=part)
+                logger.info(f"Saved chart artifact '{filename}' in tool_context.")
+            except Exception as art_err:
+                logger.warning(f"Could not save chart artifact '{filename}': {art_err}")
+
         return {
             "status": "SUCCESS",
             "user_id": user_slug,
             "chart_type": chart_type,
             "title": title,
+            "filename": filename,
             "gcs_uri": gcs_uri,
             "chart_url": web_url,
             "markdown_image": f"![{title}]({web_url})",
             "file_size_kb": round(len(img_bytes) / 1024, 1),
-            "message": f"Successfully rendered '{title}' ({chart_type}) chart. Embed and display the chart image directly on screen in your response using: ![{title}]({web_url})",
+            "message": f"Successfully rendered '{title}' ({chart_type}) chart as artifact '{filename}'. Embed and display the chart image directly on screen in your response using: ![{title}]({web_url}) and call load_artifacts(artifact_names=['{filename}'])",
         }
     except Exception as e:
         logger.exception(f"Chart generation failed: {e}")
         return {"status": "ERROR", "error": str(e), "title": title}
 
 
-def generate_marketing_creative(
+async def generate_marketing_creative(
     prompt: Optional[str] = None,
     customer_brand_name: Optional[str] = None,
     target_region: Optional[str] = None,
@@ -836,10 +847,20 @@ def generate_marketing_creative(
             content_type="image/png",
         )
 
+        # Save as ADK session artifact for native Gemini Enterprise inline rendering
+        if tool_context and hasattr(tool_context, "save_artifact"):
+            try:
+                part = types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                await tool_context.save_artifact(filename=filename, artifact=part)
+                logger.info(f"Saved creative artifact '{filename}' in tool_context.")
+            except Exception as art_err:
+                logger.warning(f"Could not save creative artifact '{filename}': {art_err}")
+
         return {
             "status": "SUCCESS",
             "user_id": user_slug,
             "campaign_title": title,
+            "filename": filename,
             "customer_brand_name": brand_name,
             "target_region": region_name,
             "local_language": lang_name,
@@ -853,7 +874,7 @@ def generate_marketing_creative(
             "markdown_image": f"![{title}]({web_url})",
             "file_size_kb": round(len(img_bytes) / 1024, 1),
             "model_used": model_name,
-            "message": f"Successfully generated commercial marketing creative for {brand_name} ({region_name}) using Gemini. Embed and display the creative image directly on screen in your response using: ![{title}]({web_url})",
+            "message": f"Successfully generated commercial marketing creative for {brand_name} ({region_name}) using Gemini as artifact '{filename}'. Embed and display the creative image directly on screen in your response using: ![{title}]({web_url}) and call load_artifacts(artifact_names=['{filename}'])",
             # Backward-compatibility fields:
             "target_state": region_name,
             "regional_language": lang_name,
@@ -870,7 +891,7 @@ def generate_marketing_creative(
         }
 
 
-def export_word_document_report(
+async def export_word_document_report(
     report_title: str,
     executive_summary: str,
     sections: List[Dict[str, Any]],
@@ -879,7 +900,7 @@ def export_word_document_report(
 ) -> Dict[str, Any]:
     """Exports a comprehensive, publication-ready analytical report in Microsoft Word (.docx) format
     containing executive narratives, structured data tables (with formatted styling), and embedded high-resolution
-    chart figures. Saves the file to the user's isolated Cloud Storage directory for immediate download.
+    chart figures. Saves the file to the user's isolated Cloud Storage directory and session artifacts for immediate download.
 
     Args:
         report_title: Title of the report (e.g. "Executive Sales Trend & Strategic Analysis").
@@ -1047,6 +1068,18 @@ def export_word_document_report(
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
+        # Save as ADK session artifact for native Gemini Enterprise access
+        if tool_context and hasattr(tool_context, "save_artifact"):
+            try:
+                part = types.Part.from_bytes(
+                    data=doc_bytes,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                await tool_context.save_artifact(filename=filename, artifact=part)
+                logger.info(f"Saved report artifact '{filename}' in tool_context.")
+            except Exception as art_err:
+                logger.warning(f"Could not save report artifact '{filename}': {art_err}")
+
         return {
             "status": "SUCCESS",
             "user_id": user_slug,
@@ -1055,7 +1088,7 @@ def export_word_document_report(
             "file_size_kb": round(len(doc_bytes) / 1024, 1),
             "gcs_uri": gcs_uri,
             "download_url": web_url,
-            "message": f"Successfully generated Word report '{filename}' ({round(len(doc_bytes) / 1024, 1)} KB).",
+            "message": f"Successfully generated Word report '{filename}' ({round(len(doc_bytes) / 1024, 1)} KB). Download link: {web_url}. Call load_artifacts(artifact_names=['{filename}']) to load.",
         }
     except Exception as e:
         logger.exception(f"Word report export failed: {e}")

@@ -1,6 +1,6 @@
 # Copyright 2026 Google LLC
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.tools import (
@@ -37,10 +37,11 @@ def mock_gemini_image_gen():
         yield patcher
 
 
-def test_generate_chart_visualization_line(mock_storage_upload):
+@pytest.mark.asyncio
+async def test_generate_chart_visualization_line(mock_storage_upload):
     labels = ["Aug 2025", "Sep 2025", "Oct 2025", "Nov 2025", "Dec 2025", "Apr 2026", "May 2026"]
     datasets = [{"label": "Sales Value (₹ Cr)", "data": [12.4, 14.2, 16.8, 15.1, 13.9, 17.5, 18.2]}]
-    res = generate_chart_visualization(
+    res = await generate_chart_visualization(
         chart_type="line",
         title="Month-by-Month Biscuits Sales Value Trend",
         labels=labels,
@@ -54,13 +55,15 @@ def test_generate_chart_visualization_line(mock_storage_upload):
     assert "Month-by-Month" in res["title"]
     assert res["chart_url"].startswith("https://storage.googleapis.com/")
     assert res["markdown_image"].startswith("![")
+    assert "filename" in res
     assert mock_storage_upload.called
 
 
-def test_generate_chart_visualization_horizontal_bar(mock_storage_upload):
+@pytest.mark.asyncio
+async def test_generate_chart_visualization_horizontal_bar(mock_storage_upload):
     labels = ["MAHARASHTRA", "UTTAR PRADESH", "WEST BENGAL", "TAMIL NADU", "BIHAR"]
     datasets = [{"label": "Sales Value (₹ Cr)", "data": [45.2, 38.9, 34.1, 29.5, 22.0]}]
-    res = generate_chart_visualization(
+    res = await generate_chart_visualization(
         chart_type="horizontal_bar",
         title="Sales Value by State (Highest to Lowest)",
         labels=labels,
@@ -75,14 +78,15 @@ def test_generate_chart_visualization_horizontal_bar(mock_storage_upload):
     assert res["user_id"] == "default_user"
 
 
-def test_generate_chart_visualization_stacked_bar(mock_storage_upload):
+@pytest.mark.asyncio
+async def test_generate_chart_visualization_stacked_bar(mock_storage_upload):
     labels = ["Monsoon 2025-2026", "Winter 2025-2026", "Summer 2026-2027"]
     datasets = [
         {"label": "SF Dark Fantasy", "data": [10.2, 8.5, 14.1]},
         {"label": "SF Mom's Magic", "data": [9.1, 7.8, 12.3]},
         {"label": "Other SKUs", "data": [25.4, 20.1, 31.0]},
     ]
-    res = generate_chart_visualization(
+    res = await generate_chart_visualization(
         chart_type="stacked_bar",
         title="Seasonal Sales Volume: Top SKUs vs Other Segment",
         labels=labels,
@@ -94,8 +98,30 @@ def test_generate_chart_visualization_stacked_bar(mock_storage_upload):
     assert res["chart_type"] == "stacked_bar"
 
 
-def test_generate_marketing_creative_bengali(mock_storage_upload):
-    res = generate_marketing_creative(
+@pytest.mark.asyncio
+async def test_generate_chart_visualization_saves_artifact(mock_storage_upload):
+    mock_ctx = MagicMock()
+    mock_ctx.user_id = "test_user_gaia"
+    mock_ctx.save_artifact = AsyncMock(return_value=0)
+
+    res = await generate_chart_visualization(
+        chart_type="bar",
+        title="State Sales Comparison",
+        labels=["State A", "State B"],
+        datasets=[{"label": "Sales", "data": [10.0, 20.0]}],
+        tool_context=mock_ctx,
+    )
+    assert res["status"] == "SUCCESS"
+    assert "filename" in res
+    assert mock_ctx.save_artifact.called
+    call_args = mock_ctx.save_artifact.call_args
+    assert call_args.kwargs["filename"] == res["filename"]
+    assert call_args.kwargs["artifact"].inline_data.mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_generate_marketing_creative_bengali(mock_storage_upload):
+    res = await generate_marketing_creative(
         campaign_title="Sunfeast Mom's Magic - Bengal Cha Special",
         brand_and_sku="Sunfeast Mom's Magic Butter & Cashew",
         target_state="West Bengal",
@@ -109,10 +135,12 @@ def test_generate_marketing_creative_bengali(mock_storage_upload):
     assert res["regional_language"] == "Bengali"
     assert res["creative_url"].endswith(".png")
     assert "![Sunfeast Mom's Magic" in res["markdown_image"]
+    assert "filename" in res
 
 
-def test_generate_marketing_creative_tamil(mock_storage_upload):
-    res = generate_marketing_creative(
+@pytest.mark.asyncio
+async def test_generate_marketing_creative_tamil(mock_storage_upload):
+    res = await generate_marketing_creative(
         campaign_title="Sunfeast Dark Fantasy - Tamil Nadu Indulgence",
         brand_and_sku="Sunfeast Dark Fantasy Choco Fills",
         target_state="Tamil Nadu",
@@ -126,8 +154,9 @@ def test_generate_marketing_creative_tamil(mock_storage_upload):
     assert res["regional_language"] == "Tamil"
 
 
-def test_generate_marketing_creative_comprehensive_spec_kannada_1_to_1(mock_storage_upload):
-    res = generate_marketing_creative(
+@pytest.mark.asyncio
+async def test_generate_marketing_creative_comprehensive_spec_kannada_1_to_1(mock_storage_upload):
+    res = await generate_marketing_creative(
         customer_brand_name="Sunfeast Dark Fantasy",
         target_region="Karnataka",
         local_language="Kannada",
@@ -158,8 +187,30 @@ def test_generate_marketing_creative_comprehensive_spec_kannada_1_to_1(mock_stor
     assert "ಅಪ್ಪಟ ಚಾಕೊಲೇಟ್ ಆನಂದ" in spec
 
 
-def test_generate_marketing_creative_telugu_9_to_16(mock_storage_upload):
-    res = generate_marketing_creative(
+@pytest.mark.asyncio
+async def test_generate_marketing_creative_saves_artifact(mock_storage_upload):
+    mock_ctx = MagicMock()
+    mock_ctx.user_id = "test_user_gaia"
+    mock_ctx.save_artifact = AsyncMock(return_value=0)
+
+    res = await generate_marketing_creative(
+        customer_brand_name="Sunfeast Bounce",
+        target_region="Maharashtra",
+        local_language="Marathi",
+        headline_text_native="चविष्ट क्रीम बिस्किटे",
+        tool_context=mock_ctx,
+    )
+    assert res["status"] == "SUCCESS"
+    assert "filename" in res
+    assert mock_ctx.save_artifact.called
+    call_args = mock_ctx.save_artifact.call_args
+    assert call_args.kwargs["filename"] == res["filename"]
+    assert call_args.kwargs["artifact"].inline_data.mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_generate_marketing_creative_telugu_9_to_16(mock_storage_upload):
+    res = await generate_marketing_creative(
         customer_brand_name="Sunfeast Mom's Magic",
         target_region="Andhra Pradesh & Telangana",
         local_language="Telugu",
@@ -181,7 +232,8 @@ def test_generate_marketing_creative_telugu_9_to_16(mock_storage_upload):
     assert "Telugu" in res["image_prompt_specification"]
 
 
-def test_export_word_document_report(mock_storage_upload):
+@pytest.mark.asyncio
+async def test_export_word_document_report(mock_storage_upload):
     sections = [
         {
             "heading": "Month-by-Month Sales Trend",
@@ -210,15 +262,24 @@ def test_export_word_document_report(mock_storage_upload):
         },
     ]
 
-    res = export_word_document_report(
+    mock_ctx = MagicMock()
+    mock_ctx.user_id = "test_user_gaia"
+    mock_ctx.save_artifact = AsyncMock(return_value=0)
+
+    res = await export_word_document_report(
         report_title="All-India Biscuits Sales Trend Analysis Report",
         executive_summary="This comprehensive report synthesizes sales performance across 34 states, 4 regions, and key Indian seasons.",
         sections=sections,
+        tool_context=mock_ctx,
     )
     assert res["status"] == "SUCCESS"
     assert res["filename"].endswith(".docx")
     assert res["file_size_kb"] > 0
     assert res["download_url"].startswith("https://storage.googleapis.com/")
+    assert mock_ctx.save_artifact.called
+    call_args = mock_ctx.save_artifact.call_args
+    assert call_args.kwargs["filename"] == res["filename"]
+    assert call_args.kwargs["artifact"].inline_data.mime_type.endswith("wordprocessingml.document")
 
 
 def test_domain_seasonality_sql_validation():

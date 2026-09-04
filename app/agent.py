@@ -21,7 +21,25 @@ load_dotenv()
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.genai import types
+
+
+class SafeLoadArtifactsTool(LoadArtifactsTool):
+    """Loads artifacts into the session, safely skipping if artifact service is uninitialized."""
+
+    async def process_llm_request(self, *, tool_context, llm_request) -> None:
+        try:
+            await super().process_llm_request(
+                tool_context=tool_context, llm_request=llm_request
+            )
+        except ValueError as e:
+            if "Artifact service is not initialized" in str(e):
+                return
+            raise
+
+
+load_artifacts_tool = SafeLoadArtifactsTool()
 
 from app.excel_plugin import (
     ExcelSpreadsheetIngestionPlugin,
@@ -55,9 +73,10 @@ Your mission is to empower business users, operational leaders, and executives t
 4. `list_available_spreadsheets`: Lists all active ingested tables currently available for querying.
 5. `get_sheet_details`: Inspects exact column schemas (names, types) and retrieves 3 preview rows for a table.
 6. `run_analytical_query`: Executes safe, read-only GoogleSQL queries (`SELECT` or `WITH`) against BigQuery tables.
-7. `generate_chart_visualization`: Renders publication-quality charts (`line`, `bar`, `horizontal_bar`, `stacked_bar`, `pie`), uploads them to the user's isolated storage, and returns Markdown image syntax (`![Title](url)`) for inline display.
-8. `generate_marketing_creative`: Generates authentic commercial advertising campaign creative banners for localized marketing and growth campaigns, saving high-res PNGs to GCS for display in chat.
-9. `export_word_document_report`: Compiles executive narratives, structured data tables (with formatted styling), and embedded chart figures into a professional Microsoft Word (`.docx`) report saved to GCS for immediate download.
+7. `generate_chart_visualization`: Renders publication-quality charts (`line`, `bar`, `horizontal_bar`, `stacked_bar`, `pie`), uploads them to the user's isolated storage, and saves them as session artifacts.
+8. `generate_marketing_creative`: Generates authentic commercial advertising campaign creative banners for localized marketing and growth campaigns, saving high-res PNGs to GCS and session artifacts.
+9. `export_word_document_report`: Compiles executive narratives, structured data tables (with formatted styling), and embedded chart figures into a professional Microsoft Word (`.docx`) report saved to GCS and session artifacts for download.
+10. `load_artifacts`: Loads and displays session artifacts (images, charts, creatives, documents) natively into the Gemini Enterprise conversational turn.
 
 ### Universal Analytical Intelligence & Zero-Hardcoding Guidelines:
 1. **Dynamic Schema-First Grounding (MANDATORY)**:
@@ -84,21 +103,26 @@ Your mission is to empower business users, operational leaders, and executives t
      - `stacked_bar`: Multi-segment distributions across dimensions.
      - `pie`: Composition or percentage market share splits.
    - Set `highlight_index` to emphasize peak values or top-performing entities.
-   - MANDATORY: Always embed and display the image directly on the screen using standard Markdown image syntax: `![<Chart Title>](<chart_url>)`. NEVER output just a raw URL or GCS path as text; the user expects to see the actual chart rendered visually on their screen.
+   - MANDATORY DUAL RENDERING ON SCREEN:
+     * Immediately after generating any chart, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` is the required mechanism that natively renders the chart image on screen in Gemini Enterprise.
+     * Also include standard Markdown image syntax: `![<Chart Title>](<chart_url>)`. NEVER output just a raw URL or GCS path as text.
 
 4. **Strategic Growth & Localized Creatives (`generate_marketing_creative`)**:
    - When users request campaign concepts, growth initiatives, marketing visual assets, or localized promotions:
      * Analyze target segments, top states, and top-performing SKUs for each target state.
-     * When the user requests a campaign or creatives for multiple states (e.g. "top 3 states"), identify the top SKU and regional culture for each of those states, formulate localized creative specifications, call `generate_marketing_creative` for the target states, and present each generated visual creative.
+     * When the user requests a campaign or creatives for multiple states (e.g. "top 3 states"), identify the top SKU and regional culture for each of those states, formulate localized creative specifications, call `generate_marketing_creative` for each target state, and present each generated visual creative.
      * Adhere strictly to the 4-part specification:
        - **1. Brand Guidelines & Visual Identity**: Provide `customer_brand_name` and `brand_aesthetic_and_palette` (visual style, design language, and hex color codes/tones blended with regional colors).
        - **2. Regional Localization & Cultural Context**: Provide `target_region`, `environmental_setting` (authentic local backdrop, e.g. coastal landscape, traditional marketplace, IT tech corridor), and `cultural_elements` (authentic attire, architectural motifs, festive symbols).
        - **3. In-Image Multilingual Typography**: Provide `local_language` (e.g. Kannada, Tamil, Telugu, Bengali, Marathi, Hindi, Gujarati, Malayalam, Gurmukhi), `headline_text_native` (idiomatic, culturally resonant slogan in the native script), `subtext_tagline_native` (supporting tagline in native script), `english_translation`, and `placement_styling` ("sleek poster card", "modern billboard", "digital display", "storefront signage").
        - **4. Composition & Technical Specifications**: Provide `subject_and_action` (demographic characters engaging in everyday authentic regional scenarios), `lighting_and_mood` (commercial lighting, cinematic golden tones, studio grade), and `aspect_ratio` ("16:9" for banners, "1:1" for feeds, "9:16" for stories).
-   - MANDATORY: Always embed and display the creative image directly on screen using standard Markdown image syntax: `![<Campaign Title>](<creative_url>)`. NEVER output just a plain link, file path, or GCS URI; the visual must render directly on the user's screen in Gemini Enterprise, accompanied by the English translation and strategic rationale.
+   - MANDATORY DUAL RENDERING ON SCREEN:
+     * Immediately after generating each creative, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` is the required mechanism that natively renders the creative image on screen in Gemini Enterprise.
+     * Also include standard Markdown image syntax: `![<Campaign Title>](<creative_url>)`. NEVER output just a plain link, file path, or GCS URI; accompany each visual with the English translation, native slogan, and strategic rationale.
 
 5. **Downloadable Executive Word Reports (`export_word_document_report`)**:
    - When the user asks for a Word document / report to download, assemble the full analysis into structured sections with narrative insights, data tables, and embedded chart URIs from previously generated charts.
+   - Call `load_artifacts(artifact_names=[<filename>])` using the returned `filename` so the Word report artifact is accessible in the session.
    - Present the direct download link and document summary in the response.
 """
 
@@ -120,6 +144,7 @@ root_agent = Agent(
         generate_chart_visualization,
         generate_marketing_creative,
         export_word_document_report,
+        load_artifacts_tool,
     ],
     before_model_callback=before_model_callback_hook,
 )

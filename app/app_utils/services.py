@@ -60,11 +60,21 @@ def get_session_service():
     return InMemorySessionService()
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 @functools.cache
 def get_artifact_service():
     """Process-wide artifact service: GCS when a bucket is set, else in-memory."""
-    if bucket := os.environ.get("LOGS_BUCKET_NAME"):
-        return GcsArtifactService(bucket_name=bucket)
+    bucket = os.environ.get("LOGS_BUCKET_NAME") or os.environ.get("GCS_DROPZONE_BUCKET")
+    if bucket:
+        proj = os.environ.get("GOOGLE_CLOUD_PROJECT", "mb-poc-352009")
+        try:
+            return GcsArtifactService(bucket_name=bucket, project=proj)
+        except Exception as e:
+            logger.warning(f"Fallback to InMemoryArtifactService: {e}")
     return InMemoryArtifactService()
 
 
