@@ -358,3 +358,73 @@ def test_run_analytical_query_dynamic_schema_feedback():
     ]
     assert "hint" in res
 
+
+@pytest.mark.asyncio
+async def test_safe_load_artifacts_tool_registration_and_dispatch():
+    from app.agent import root_agent, SafeLoadArtifactsTool
+    from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools, LlmRequest
+    from google.genai import types
+
+    # 1. Verify load_artifacts tool is present in tools_dict after process_agent_tools
+    req = LlmRequest(model="gemini-flash-latest", config=types.GenerateContentConfig())
+    mock_inv_ctx = MagicMock()
+    mock_inv_ctx.agent = root_agent
+    mock_inv_ctx.session.state = {}
+    mock_inv_ctx.artifact_service = None
+
+    await _process_agent_tools(mock_inv_ctx, req)
+    assert "load_artifacts" in req.tools_dict, "load_artifacts must be registered in tools_dict"
+    assert any(
+        fd.name == "load_artifacts"
+        for t in req.config.tools
+        for fd in getattr(t, "function_declarations", [])
+    ), "load_artifacts function declaration must be present in config.tools"
+
+    # 2. Verify SafeLoadArtifactsTool run_async filtering
+    tool = SafeLoadArtifactsTool()
+    tool_ctx = MagicMock()
+
+    # Filters out raw data files and keeps visual files
+    res = await tool.run_async(
+        args={"artifact_names": ["raw_sales.csv", "chart.png", "data.xlsx"]},
+        tool_context=tool_ctx,
+    )
+    assert res["artifact_names"] == ["chart.png"]
+    assert "must NOT be loaded into prompt memory" in res["status"]
+
+    # Also supports single artifact_name
+    res_single = await tool.run_async(
+        args={"artifact_name": "marketing_banner.png"},
+        tool_context=tool_ctx,
+    )
+    assert res_single["artifact_names"] == ["marketing_banner.png"]
+
+
+def test_serialize_event_for_json_with_artifacts():
+    import json
+    import base64
+    from google.genai import types
+    from vertexai.agent_engines.templates.adk import _Artifact, _ArtifactVersion, _StreamingRunResponse
+    from app.app_utils.reasoning_engine_adapter import serialize_event_for_json
+
+    part = types.Part.from_bytes(data=b"\x89PNG\r\n\x1a\nFakePngData", mime_type="image/png")
+    version = _ArtifactVersion(version=0, data=part)
+    artifact = _Artifact(file_name="sales_chart_2026.png", versions=[version])
+    response = _StreamingRunResponse(events=[], artifacts=[artifact], session_id="test_sess_123")
+    dumped = response.dump()
+
+    # Verify serialize_event_for_json serializes without TypeError: Object of type Part is not JSON serializable
+    json_str = serialize_event_for_json(dumped)
+    assert isinstance(json_str, str)
+
+    parsed = json.loads(json_str)
+    assert parsed["session_id"] == "test_sess_123"
+    assert len(parsed["artifacts"]) == 1
+    art = parsed["artifacts"][0]
+    assert art["file_name"] == "sales_chart_2026.png"
+    v0_data = art["versions"][0]["data"]
+    assert v0_data["inline_data"]["mime_type"] == "image/png"
+    assert base64.b64decode(v0_data["inline_data"]["data"]) == b"\x89PNG\r\n\x1a\nFakePngData"
+
+
+

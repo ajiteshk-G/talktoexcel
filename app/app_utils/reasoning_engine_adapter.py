@@ -22,10 +22,12 @@ contract. Agent Engine forwards calls to ``/api/reasoning_engine`` (sync) and
 packaged Agent Engine.
 """
 
-from typing import Optional
+from typing import Any, Optional
+import base64
+import datetime
 import inspect
 import json
-import base64
+import logging
 
 from fastapi import FastAPI, HTTPException, Request, encoders, responses
 from vertexai.agent_engines.templates.adk import AdkApp
@@ -33,7 +35,34 @@ from vertexai.agent_engines.templates.adk import AdkApp
 from app.app_utils import services
 from app.excel_plugin import sanitize_message_dict
 from app.ingestion import sanitize_user_id
-import base64
+
+logger = logging.getLogger(__name__)
+
+
+def serialize_event_for_json(event: Any) -> str:
+    """Safely serializes an event to a JSON string, handling types.Part, Pydantic models, datetimes, and bytes."""
+    if isinstance(event, str):
+        return event
+
+    def safe_json_default(obj):
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump(mode="json", exclude_none=True)
+        if hasattr(obj, "to_dict"):
+            try:
+                return obj.to_dict()
+            except Exception:
+                pass
+        if isinstance(obj, (bytes, bytearray)):
+            return base64.b64encode(obj).decode("utf-8")
+        if isinstance(obj, (datetime.date, datetime.datetime)):
+            return obj.isoformat()
+        try:
+            return encoders.jsonable_encoder(obj)
+        except Exception:
+            return str(obj)
+
+    return json.dumps(event, default=safe_json_default)
+
 
 
 def extract_caller_user_id(request: Request, passed_user_id: Optional[str] = None) -> str:
@@ -146,15 +175,19 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
                 call_kwargs = {k: v for k, v in call_kwargs.items() if k in sig.parameters}
 
         async def generator():
-            async for event in method(**call_kwargs):
-                yield json.dumps(event) + "\n"
+            try:
+                async for event in method(**call_kwargs):
+                    yield serialize_event_for_json(event) + "\n"
+            except Exception as e:
+                logger.exception(f"Error in stream_reasoning_engine generator: {e}")
+                raise
 
         return responses.StreamingResponse(
             content=generator(), media_type="application/json"
         )
 
     @app.post("/api/reasoning_engine")
-    async def query(request: Request) -> responses.JSONResponse:
+    async def query(request: Request) -> responses.Response:
         body = await request.json()
         class_method = body.get("class_method", "")
         method = resolve_method(class_method, streaming=False)
@@ -193,6 +226,8 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
             if inspect.iscoroutinefunction(method)
             else method(**call_kwargs)
         )
-        return responses.JSONResponse(
-            content=encoders.jsonable_encoder({"output": output})
+        return responses.Response(
+            content=serialize_event_for_json({"output": output}),
+            media_type="application/json",
         )
+

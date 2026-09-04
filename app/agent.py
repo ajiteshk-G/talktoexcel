@@ -45,7 +45,14 @@ class SafeLoadArtifactsTool(LoadArtifactsTool):
     async def run_async(
         self, *, args: dict[str, Any], tool_context: ToolContext
     ) -> Any:
-        raw_names: list[str] = args.get("artifact_names", [])
+        raw_names = args.get("artifact_names")
+        if not raw_names and "artifact_name" in args:
+            raw_names = [args["artifact_name"]]
+        elif isinstance(raw_names, str):
+            raw_names = [raw_names]
+        elif not raw_names:
+            raw_names = []
+
         allowed_names = []
         blocked_names = []
         for name in raw_names:
@@ -74,10 +81,11 @@ class SafeLoadArtifactsTool(LoadArtifactsTool):
     ):
         try:
             all_artifact_names = await tool_context.list_artifacts()
-        except ValueError as e:
-            if "Artifact service is not initialized" in str(e):
+        except Exception as e:
+            if "Artifact service is not initialized" in str(e) or "not initialized" in str(e).lower():
                 return
-            raise
+            logger.warning(f"Error listing artifacts: {e}")
+            return
 
         if not all_artifact_names:
             return
@@ -97,50 +105,55 @@ NEVER call load_artifacts on raw data files or spreadsheets—query BigQuery ins
 """])
 
         if llm_request.contents and llm_request.contents[-1].parts:
-            function_response = getattr(llm_request.contents[-1].parts[0], "function_response", None)
-            if function_response and function_response.name == "load_artifacts":
-                response = function_response.response or {}
-                artifact_names = response.get("artifact_names", [])
-                for artifact_name in artifact_names:
-                    ext = os.path.splitext(artifact_name.lower())[1]
-                    if ext in DATA_EXTENSIONS:
-                        continue
+            for part in llm_request.contents[-1].parts:
+                function_response = getattr(part, "function_response", None)
+                if function_response and getattr(function_response, "name", None) == "load_artifacts":
+                    response = getattr(function_response, "response", {}) or {}
+                    artifact_names = response.get("artifact_names", [])
+                    if isinstance(artifact_names, str):
+                        artifact_names = [artifact_names]
+                    for artifact_name in artifact_names:
+                        ext = os.path.splitext(artifact_name.lower())[1]
+                        if ext in DATA_EXTENSIONS:
+                            continue
 
-                    try:
-                        artifact = await tool_context.load_artifact(artifact_name)
-                    except Exception as e:
-                        logger.warning(f"Error loading artifact {artifact_name}: {e}")
-                        continue
-
-                    if artifact is None and not artifact_name.startswith("user:"):
                         try:
-                            artifact = await tool_context.load_artifact(f"user:{artifact_name}")
-                        except Exception:
-                            pass
+                            artifact = await tool_context.load_artifact(artifact_name)
+                        except Exception as e:
+                            logger.warning(f"Error loading artifact {artifact_name}: {e}")
+                            continue
 
-                    if artifact is None:
-                        continue
+                        if artifact is None and not artifact_name.startswith("user:"):
+                            try:
+                                artifact = await tool_context.load_artifact(f"user:{artifact_name}")
+                            except Exception:
+                                pass
 
-                    artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
-                    llm_request.contents.append(
-                        types.Content(
-                            role="user",
-                            parts=[
-                                types.Part.from_text(text=f"Artifact {artifact_name} is:"),
-                                artifact_part,
-                            ],
+                        if artifact is None:
+                            continue
+
+                        artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
+                        llm_request.contents.append(
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_text(text=f"Artifact {artifact_name} is:"),
+                                    artifact_part,
+                                ],
+                            )
                         )
-                    )
 
     async def process_llm_request(self, *, tool_context: ToolContext, llm_request: LlmRequest) -> None:
+        # Crucial: Register tool declaration and populate llm_request.tools_dict['load_artifacts']
+        llm_request.append_tools([self])
         try:
             await self._append_artifacts_to_llm_request(
                 tool_context=tool_context, llm_request=llm_request
             )
-        except ValueError as e:
-            if "Artifact service is not initialized" in str(e):
+        except Exception as e:
+            if "Artifact service is not initialized" in str(e) or "not initialized" in str(e).lower():
                 return
-            raise
+            logger.warning(f"Error in process_llm_request artifacts: {e}")
 
 
 load_artifacts_tool = SafeLoadArtifactsTool()
