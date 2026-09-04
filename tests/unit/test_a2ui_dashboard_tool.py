@@ -137,8 +137,11 @@ async def test_render_interactive_dashboard_tool_execution():
     assert "surfaceUpdate" in a2ui_payload[1]
     assert result["surface_id"] == a2ui_payload[0]["beginRendering"]["surfaceId"]
 
-    # Verify save_artifact was called for session persistence
-    assert mock_context.save_artifact.called
-    saved_filename = mock_context.save_artifact.call_args[1]["filename"]
-    assert saved_filename.startswith("dashboard_")
-    assert saved_filename.endswith(".html")
+    # Verify save_artifact is NOT called for HTML dashboards (prevents Unsupported attachment in GE)
+    assert not mock_context.save_artifact.called
+
+    # Verify formatted a2a_datapart_blocks are present for GE inline rendering
+    assert "a2a_datapart_blocks" in result
+    assert "<a2a_datapart_json>" in result["a2a_datapart_blocks"]
+    assert "</a2a_datapart_json>" in result["a2a_datapart_blocks"]
+    assert "application/json+a2ui" in result["a2a_datapart_blocks"]

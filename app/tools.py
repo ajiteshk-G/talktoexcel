@@ -1243,18 +1243,11 @@ async def render_interactive_dashboard(
         )
         surface_id = a2ui_payload[0]["beginRendering"]["surfaceId"]
 
-        # Persist HTML dashboard as an ADK session artifact if tool_context supports it
-        filename = f"dashboard_{re.sub(r'[^a-zA-Z0-9]', '_', title).strip('_').lower()[:25]}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.html"
-        if tool_context and hasattr(tool_context, "save_artifact"):
-            try:
-                part = types.Part.from_bytes(
-                    data=html_content.encode("utf-8"),
-                    mime_type="text/html",
-                )
-                await tool_context.save_artifact(filename=filename, artifact=part)
-                logger.info(f"Saved interactive dashboard artifact '{filename}'.")
-            except Exception as art_err:
-                logger.warning(f"Could not save dashboard artifact '{filename}': {art_err}")
+        # Format A2UI payload into <a2a_datapart_json> envelopes for Gemini Enterprise rendering
+        datapart_blocks = "\n".join([
+            f'<a2a_datapart_json>{{"data": {json.dumps(msg)}, "metadata": {{"mimeType": "application/json+a2ui"}}}}</a2a_datapart_json>'
+            for msg in a2ui_payload
+        ])
 
         return {
             "status": "SUCCESS",
@@ -1263,11 +1256,14 @@ async def render_interactive_dashboard(
             "chart_type": chart_type,
             "surface_id": surface_id,
             "a2ui_payload": a2ui_payload,
-            "artifact_filename": filename,
+            "a2a_datapart_blocks": datapart_blocks,
             "message": (
-                f"Successfully rendered interactive A2UI dashboard '{title}' ({chart_type} chart, "
-                f"{len(summary_metrics or [])} KPI cards, {len(table_rows or [])} data rows). "
-                f"Surface '{surface_id}' dispatched to Gemini Enterprise."
+                f"Successfully generated interactive A2UI dashboard '{title}' ({chart_type} chart, "
+                f"{len(summary_metrics or [])} KPI cards, {len(table_rows or [])} data rows).\n\n"
+                f"{datapart_blocks}\n\n"
+                "CRITICAL INSTRUCTION FOR MODEL: Output the above <a2a_datapart_json>...</a2a_datapart_json> "
+                "blocks verbatim in your response to render the interactive dashboard on screen in Gemini Enterprise. "
+                "Do NOT call load_artifacts."
             ),
         }
     except Exception as e:

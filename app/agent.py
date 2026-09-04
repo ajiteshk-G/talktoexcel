@@ -34,7 +34,7 @@ from google.genai import types
 logger = logging.getLogger("google_adk." + __name__)
 
 DATA_EXTENSIONS = {".csv", ".xlsx", ".xls", ".xlsm", ".tsv", ".txt"}
-ALLOWED_VISUAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".docx", ".html"}
+ALLOWED_VISUAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".docx"}
 
 
 
@@ -234,24 +234,28 @@ Your mission is to empower business users, operational leaders, and executives t
        - `chart_data`: Dict with labels and dataset values.
        - `table_headers` and `table_rows`: Clean table data for client-side search, sort, and pagination.
        - `suggested_actions`: Contextual action chips (e.g. `[{{"label": "Export Word Report", "name": "export_word_report", "context": {{}}}}]`).
-   - **Handling Incoming A2UI Actions (postMessage)**:
-     * When the user clicks an action chip inside the iframe dashboard, Gemini Enterprise forwards an A2A message containing the action `name` and `context`.
-     * If `name == "export_word_report"`, call `export_word_document_report`.
-     * If `name == "generate_creative"`, call `generate_marketing_creative`.
-     * If `name == "drill_down"`, inspect the filter parameters from `context`, execute the targeted BigQuery query, and present the refined insights.
+      * **CRITICAL RENDERING ON SCREEN**:
+        - `render_interactive_dashboard` returns `<a2a_datapart_json>` blocks containing the A2UI surface payload.
+        - You MUST include the `<a2a_datapart_json>...</a2a_datapart_json>` blocks verbatim in your final response. Gemini Enterprise uses these tags to render the live interactive dashboard directly in the chat interface.
+        - NEVER call `load_artifacts` for interactive dashboards! Dashboards are live UI components rendered via `<a2a_datapart_json>`, NOT file attachments. Calling `load_artifacts` on a dashboard will cause an "Unsupported attachment" error.
+    - **Handling Incoming A2UI Actions (postMessage)**:
+      * When the user clicks an action chip inside the iframe dashboard, Gemini Enterprise forwards an A2A message containing the action `name` and `context`.
+      * If `name == "export_word_report"`, call `export_word_document_report`.
+      * If `name == "generate_creative"`, call `generate_marketing_creative`.
+      * If `name == "drill_down"`, inspect the filter parameters from `context`, execute the targeted BigQuery query, and present the refined insights.
 
 5. **Visual Chart Generation (`generate_chart_visualization`)**:
-   - When the user asks for a static trend graph, ranking graph, or visual comparison, call `generate_chart_visualization`.
-   - Match the chart type to the business inquiry:
-     - `line`: Temporal trends across time periods.
-     - `horizontal_bar`: Ranked comparisons (e.g. categories, entities, departments, or items from highest to lowest).
-     - `bar`: Discrete group or period comparisons.
-     - `stacked_bar`: Multi-segment distributions across dimensions.
-     - `pie`: Composition or percentage market share splits.
-   - Set `highlight_index` to emphasize peak values or top-performing entities.
-   - MANDATORY DUAL RENDERING ON SCREEN:
-     * Immediately after generating any chart, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` is the required mechanism that natively renders the chart image on screen in Gemini Enterprise.
-     * Also include standard Markdown image syntax: `![<Chart Title>](<chart_url>)`. NEVER output just a raw URL or GCS path as text.
+    - When the user asks for a static chart, graph, or image visualization (e.g. "show a chart", "create an image/graph", "visualize"):
+      * Call `generate_chart_visualization`. It produces a `.png` image file.
+      * Immediately after generating the chart, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` renders the static chart image on screen in Gemini Enterprise.
+      * Also include standard Markdown image syntax: `![<Chart Title>](<chart_url>)`. NEVER output just a raw URL or GCS path as text.
+    - Match the chart type to the business inquiry:
+      - `line`: Temporal trends across time periods.
+      - `horizontal_bar`: Ranked comparisons (e.g. categories, entities, departments, or items from highest to lowest).
+      - `bar`: Discrete group or period comparisons.
+      - `stacked_bar`: Multi-segment distributions across dimensions.
+      - `pie`: Composition or percentage market share splits.
+    - Set `highlight_index` to emphasize peak values or top-performing entities.
 
 6. **Strategic Growth & Localized Creatives (`generate_marketing_creative`)**:
    - When users request campaign concepts, growth initiatives, marketing visual assets, or localized promotions:
