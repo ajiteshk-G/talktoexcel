@@ -3,12 +3,5 @@
   "deployment_target": "agent_runtime",
   "is_a2a": true,
   "agent_directory": "app",
-  "deployment_timestamp": "2026-09-04T12:52:54.987552+00:00",
-  "pending_operation": {
-    "operation_name": "projects/1047195478355/locations/us-central1/reasoningEngines/1445045801188327424/operations/5820988164319215616",
-    "project": "mb-poc-352009",
-    "location": "us-central1",
-    "deployment_target": "agent_runtime",
-    "started_at": "2026-09-04T13:05:17.800009+00:00"
-  }
+  "deployment_timestamp": "2026-09-04T13:08:47.530408+00:00"
 }
