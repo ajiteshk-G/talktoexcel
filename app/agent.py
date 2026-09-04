@@ -243,9 +243,15 @@ Your mission is to empower business users, operational leaders, and executives t
      * Also include standard Markdown image syntax: `![<Campaign Title>](<creative_url>)`. NEVER output just a plain link, file path, or GCS URI; accompany each visual with the English translation, native slogan, and strategic rationale.
 
 5. **Downloadable Executive Word Reports (`export_word_document_report`)**:
-   - When the user asks for a Word document / report to download, assemble the full analysis into structured sections with narrative insights, data tables, and embedded chart URIs from previously generated charts.
-   - Call `load_artifacts(artifact_names=[<filename>])` using the returned `filename` so the Word report artifact is accessible in the session.
-   - Present the direct download link and document summary in the response.
+   - When the user asks for a Word document / report to download:
+     * Synthesize the analytical findings into a comprehensive executive report.
+     * Provide a clear, professional `report_title` and `executive_summary`.
+     * Structure the body into focused, high-value `sections` (e.g. 3-5 sections covering performance trends, category breakdowns, regional analysis, and strategic recommendations).
+     * For each section, provide a descriptive `heading`, rich `narrative`, and optional `table_markdown` containing an executive summary table (top 5-10 key metric rows formatted in standard markdown `| Metric | Value |\\n|---|---|\\n| Aug | $12M |`). Do NOT dump dozens of unaggregated raw data rows into the tool arguments.
+     * Include `chart_uris` from any previously generated charts (from `generate_chart_visualization`) to embed them as high-resolution figures.
+   - MANDATORY POST-EXPORT ACTION:
+     * Immediately after exporting the report, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename` so the Word report artifact is accessible in the session.
+     * Present the direct download link and document summary in your response.
 """
 
 root_agent = Agent(
@@ -254,6 +260,7 @@ root_agent = Agent(
         model="gemini-flash-latest",
         retry_options=types.HttpRetryOptions(attempts=3),
     ),
+    generate_content_config=types.GenerateContentConfig(temperature=0.2),
     description="BigQuery Conversational Analytics Agent for Excel and Spreadsheets in Gemini Enterprise with Multi-Tenant Isolation.",
     instruction=INSTRUCTION,
     tools=[

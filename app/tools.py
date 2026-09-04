@@ -25,11 +25,14 @@ import base64
 import datetime
 import decimal
 import io
+import json
 import logging
 import os
 import re
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def serialize_bq_value(val: Any) -> Any:
@@ -891,10 +894,50 @@ async def generate_marketing_creative(
         }
 
 
+class ReportSection(BaseModel):
+    """Structured section for Word document reports."""
+    model_config = ConfigDict(extra="allow")
+
+    heading: str = Field(description="Section heading title (e.g. 'Month-by-Month Sales Trend Analysis', 'Key SKU Performance')")
+    narrative: str = Field(description="Comprehensive analytical narrative, observations, and strategic recommendations for this section")
+    table_markdown: Optional[str] = Field(default=None, description="Optional executive summary data table in markdown format (e.g. '| Month | Sales (₹) | MoM Growth |\\n|---|---|---|\\n| Aug 2025 | 12.4M | Baseline |') with top 5-10 key metric rows")
+    chart_uris: Optional[List[str]] = Field(default=None, description="Optional list of GCS URIs of previously generated charts to embed as figures (e.g. ['gs://...'])")
+
+
+def parse_markdown_table(md_str: str) -> Tuple[List[str], List[List[str]]]:
+    """Parses a markdown table string into (headers, rows)."""
+    if not md_str or not isinstance(md_str, str):
+        return [], []
+    lines = [line.strip() for line in md_str.strip().split("\n") if line.strip()]
+    pipe_lines = [l for l in lines if "|" in l]
+    if not pipe_lines:
+        return [], []
+
+    def clean_cells(row_str: str) -> List[str]:
+        parts = row_str.strip().strip("|").split("|")
+        return [p.strip() for p in parts]
+
+    headers = clean_cells(pipe_lines[0])
+    rows: List[List[str]] = []
+
+    for line in pipe_lines[1:]:
+        stripped = line.replace(" ", "").replace("-", "").replace(":", "").replace("|", "")
+        if not stripped:
+            continue
+        cells = clean_cells(line)
+        if len(cells) < len(headers):
+            cells.extend([""] * (len(headers) - len(cells)))
+        elif len(cells) > len(headers):
+            cells = cells[: len(headers)]
+        rows.append(cells)
+
+    return headers, rows
+
+
 async def export_word_document_report(
     report_title: str,
     executive_summary: str,
-    sections: List[Dict[str, Any]],
+    sections: List[ReportSection],
     author: Optional[str] = "Gemini Enterprise Conversational Analytics",
     tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
@@ -905,10 +948,10 @@ async def export_word_document_report(
     Args:
         report_title: Title of the report (e.g. "Executive Sales Trend & Strategic Analysis").
         executive_summary: Executive summary narrative summarizing core findings and strategic recommendations.
-        sections: List of section dicts. Each section should have:
+        sections: List of ReportSection objects or section dicts. Each section contains:
             - "heading": Section title string (e.g. "Month-by-Month Sales Trend Analysis").
             - "narrative": Analytical narrative and business observations.
-            - "table": Optional dict {"headers": ["Col1", "Col2", ...], "rows": [[val1, val2, ...], ...]}.
+            - "table_markdown": Optional markdown-formatted summary table string with top 5-10 key metric rows.
             - "chart_uris": Optional list of GCS URIs of previously generated charts to embed as figures.
         author: Optional author/system name.
 
@@ -961,11 +1004,47 @@ async def export_word_document_report(
 
         storage_client = storage.Client(project=PROJECT_ID)
 
-        for sec_idx, sec in enumerate(sections, 1):
-            heading_text = sec.get("heading", f"Section {sec_idx}")
-            narrative = sec.get("narrative", "")
-            table_dict = sec.get("table")
-            chart_uris = sec.get("chart_uris") or []
+        # Defensive normalization of sections
+        cleaned_sections = []
+        if isinstance(sections, str):
+            try:
+                parsed = json.loads(sections)
+                sections = parsed if isinstance(parsed, list) else [parsed]
+            except Exception:
+                sections = [sections]
+
+        if isinstance(sections, list):
+            for item in sections:
+                if isinstance(item, str):
+                    s_str = item.strip()
+                    if s_str.startswith("{") and s_str.endswith("}"):
+                        try:
+                            item = json.loads(s_str)
+                        except Exception:
+                            pass
+                cleaned_sections.append(item)
+        else:
+            cleaned_sections = [sections]
+
+        for sec_idx, sec in enumerate(cleaned_sections, 1):
+            if isinstance(sec, ReportSection):
+                heading_text = sec.heading or f"Section {sec_idx}"
+                narrative = sec.narrative or ""
+                chart_uris = sec.chart_uris or []
+                table_markdown = sec.table_markdown
+                table_dict = getattr(sec, "table", None)
+            elif isinstance(sec, dict):
+                heading_text = sec.get("heading") or f"Section {sec_idx}"
+                narrative = sec.get("narrative") or ""
+                chart_uris = sec.get("chart_uris") or []
+                table_markdown = sec.get("table_markdown")
+                table_dict = sec.get("table")
+            else:
+                heading_text = f"Section {sec_idx}"
+                narrative = str(sec)
+                chart_uris = []
+                table_markdown = None
+                table_dict = None
 
             h_p = doc.add_paragraph()
             h_p.paragraph_format.space_before = Pt(14)
@@ -982,7 +1061,7 @@ async def export_word_document_report(
                 n_run.font.size = Pt(10.5)
 
             for chart_uri in chart_uris:
-                if chart_uri.startswith("gs://"):
+                if isinstance(chart_uri, str) and chart_uri.startswith("gs://"):
                     try:
                         path_without = chart_uri[5:]
                         bucket_name, blob_name = path_without.split("/", 1)
@@ -1005,53 +1084,62 @@ async def export_word_document_report(
                     except Exception as img_err:
                         logger.warning(f"Could not embed chart {chart_uri}: {img_err}")
 
-            if table_dict and isinstance(table_dict, dict):
-                headers = table_dict.get("headers", [])
+            # Extract table data from markdown or dict
+            headers, rows = [], []
+            if table_markdown:
+                headers, rows = parse_markdown_table(table_markdown)
+            elif table_dict and isinstance(table_dict, dict):
+                headers = [str(h) for h in table_dict.get("headers", [])]
                 rows = table_dict.get("rows", [])
-                if headers and rows:
-                    t_p = doc.add_paragraph()
-                    t_p.paragraph_format.space_before = Pt(6)
-                    t_p.paragraph_format.space_after = Pt(4)
+            elif table_dict and isinstance(table_dict, str):
+                headers, rows = parse_markdown_table(table_dict)
 
-                    table = doc.add_table(rows=len(rows) + 1, cols=len(headers))
-                    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-                    table.style = "Table Grid"
+            if headers and rows:
+                t_p = doc.add_paragraph()
+                t_p.paragraph_format.space_before = Pt(6)
+                t_p.paragraph_format.space_after = Pt(4)
 
-                    hdr_cells = table.rows[0].cells
-                    for col_idx, h_text in enumerate(headers):
-                        cell = hdr_cells[col_idx]
-                        set_cell_shading(cell, "1A73E8")
+                table = doc.add_table(rows=len(rows) + 1, cols=len(headers))
+                table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                table.style = "Table Grid"
+
+                hdr_cells = table.rows[0].cells
+                for col_idx, h_text in enumerate(headers):
+                    cell = hdr_cells[col_idx]
+                    set_cell_shading(cell, "1A73E8")
+                    p = cell.paragraphs[0]
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p.paragraph_format.space_before = Pt(3)
+                    p.paragraph_format.space_after = Pt(3)
+                    r = p.add_run(str(h_text))
+                    r.font.bold = True
+                    r.font.size = Pt(9.5)
+                    r.font.color.rgb = RGBColor(255, 255, 255)
+
+                for r_idx, row_data in enumerate(rows):
+                    row_cells = table.rows[r_idx + 1].cells
+                    row_bg = "F8F9FA" if (r_idx % 2 == 1) else "FFFFFF"
+                    for c_idx, cell_value in enumerate(row_data):
+                        if c_idx >= len(row_cells):
+                            break
+                        cell = row_cells[c_idx]
+                        set_cell_shading(cell, row_bg)
                         p = cell.paragraphs[0]
-                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        p.paragraph_format.space_before = Pt(3)
-                        p.paragraph_format.space_after = Pt(3)
-                        r = p.add_run(str(h_text))
-                        r.font.bold = True
-                        r.font.size = Pt(9.5)
-                        r.font.color.rgb = RGBColor(255, 255, 255)
-
-                    for r_idx, row_data in enumerate(rows):
-                        row_cells = table.rows[r_idx + 1].cells
-                        row_bg = "F8F9FA" if (r_idx % 2 == 1) else "FFFFFF"
-                        for c_idx, cell_value in enumerate(row_data):
-                            cell = row_cells[c_idx]
-                            set_cell_shading(cell, row_bg)
-                            p = cell.paragraphs[0]
-                            val_str = str(cell_value) if cell_value is not None else ""
-                            clean_val = re.sub(r"[,$₹€£%()\s]", "", val_str)
-                            is_num = False
-                            if clean_val:
-                                try:
-                                    float(clean_val)
-                                    is_num = True
-                                except ValueError:
-                                    is_num = False
-                            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if is_num else WD_ALIGN_PARAGRAPH.LEFT
-                            p.paragraph_format.space_before = Pt(2)
-                            p.paragraph_format.space_after = Pt(2)
-                            r = p.add_run(val_str)
-                            r.font.size = Pt(9)
-                            r.font.color.rgb = RGBColor(32, 33, 36)
+                        val_str = str(cell_value) if cell_value is not None else ""
+                        clean_val = re.sub(r"[,$₹€£%()\s]", "", val_str)
+                        is_num = False
+                        if clean_val:
+                            try:
+                                float(clean_val)
+                                is_num = True
+                            except ValueError:
+                                is_num = False
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if is_num else WD_ALIGN_PARAGRAPH.LEFT
+                        p.paragraph_format.space_before = Pt(2)
+                        p.paragraph_format.space_after = Pt(2)
+                        r = p.add_run(val_str)
+                        r.font.size = Pt(9)
+                        r.font.color.rgb = RGBColor(32, 33, 36)
 
         doc_buf = io.BytesIO()
         doc.save(doc_buf)

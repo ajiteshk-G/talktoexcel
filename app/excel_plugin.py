@@ -523,6 +523,9 @@ async def before_model_callback_hook(
     if not llm_request.contents:
         return None
 
+    if getattr(llm_request, "config", None) is not None:
+        llm_request.config.temperature = 0.2
+
     for i, content in enumerate(llm_request.contents):
         new_content, changed = sanitize_content(content, user_id)
         if changed:

@@ -282,6 +282,45 @@ async def test_export_word_document_report(mock_storage_upload):
     assert call_args.kwargs["artifact"].inline_data.mime_type.endswith("wordprocessingml.document")
 
 
+@pytest.mark.asyncio
+async def test_export_word_document_report_with_markdown_table_and_model(mock_storage_upload):
+    from app.tools import ReportSection
+
+    sections = [
+        ReportSection(
+            heading="Quarterly Momentum",
+            narrative="Sales expanded across all quarters, led by seasonal peaks.",
+            table_markdown="""| Quarter | Sales ($M) | Growth % |
+|:---|:---|:---|
+| Q1 | $10.5 | Baseline |
+| Q2 | $12.8 | +21.9% |
+| Q3 | $14.2 | +10.9% |
+| Q4 | $13.5 | -4.9% |""",
+            chart_uris=["gs://mb-poc-352009-excel-dropzone/default_user/charts/sample_chart.png"],
+        ),
+        ReportSection(
+            heading="Strategic Recommendations",
+            narrative="Focus promotional budget on mid-year seasonal stabilization and expanding top-performing lines.",
+        ),
+    ]
+
+    mock_ctx = MagicMock()
+    mock_ctx.user_id = "test_user_pydantic"
+    mock_ctx.save_artifact = AsyncMock(return_value=0)
+
+    res = await export_word_document_report(
+        report_title="Quarterly Sales Trend Analysis",
+        executive_summary="Fiscal year performance exceeded internal targets with strong momentum across key quarters.",
+        sections=sections,
+        tool_context=mock_ctx,
+    )
+    assert res["status"] == "SUCCESS"
+    assert res["filename"].endswith(".docx")
+    assert res["file_size_kb"] > 0
+    assert "download_url" in res
+    assert mock_ctx.save_artifact.called
+
+
 def test_domain_seasonality_sql_validation():
     user = "test_user"
     season_query = f"""
