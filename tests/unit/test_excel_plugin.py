@@ -79,13 +79,13 @@ def test_extract_part_bytes_and_name(sample_xlsx_bytes):
 @patch("app.excel_plugin.upload_bytes_to_dropzone")
 @patch("app.excel_plugin.ingest_file")
 def test_sanitize_part(mock_ingest, mock_upload, sample_xlsx_bytes):
-    mock_upload.return_value = "gs://dropzone/ajiteshk/q1_budget.xlsx"
+    mock_upload.return_value = "gs://dropzone/test_analyst/q1_budget.xlsx"
     mock_ingest.return_value = {
         "status": "SUCCESS",
         "sheets": [
             {
                 "sheet_name": "Financials",
-                "table_name": "wb_ajiteshk_q1_budget_financials",
+                "table_name": "wb_test_analyst_q1_budget_financials",
                 "row_count": 2,
                 "columns_schema": [{"name": "category", "type": "STRING"}],
                 "sample_preview": [{"category": "Payroll"}],
@@ -99,24 +99,24 @@ def test_sanitize_part(mock_ingest, mock_upload, sample_xlsx_bytes):
     )
     p_excel.inline_data.display_name = "q1_budget.xlsx"
 
-    sanitized_part, modified = sanitize_part(p_excel, user_id="ajiteshk")
+    sanitized_part, modified = sanitize_part(p_excel, user_id="test_analyst")
     assert modified is True
     assert sanitized_part.inline_data is None
     assert sanitized_part.text is not None
-    assert "wb_ajiteshk_q1_budget_financials" in sanitized_part.text
-    assert "gs://dropzone/ajiteshk/q1_budget.xlsx" in sanitized_part.text
+    assert "wb_test_analyst_q1_budget_financials" in sanitized_part.text
+    assert "gs://dropzone/test_analyst/q1_budget.xlsx" in sanitized_part.text
 
 
 @patch("app.excel_plugin.upload_bytes_to_dropzone")
 @patch("app.excel_plugin.ingest_file")
 def test_sanitize_content(mock_ingest, mock_upload, sample_xlsx_bytes):
-    mock_upload.return_value = "gs://dropzone/ajiteshk/budget.xlsx"
+    mock_upload.return_value = "gs://dropzone/test_analyst/budget.xlsx"
     mock_ingest.return_value = {
         "status": "SUCCESS",
         "sheets": [
             {
                 "sheet_name": "Sheet1",
-                "table_name": "wb_ajiteshk_budget_sheet1",
+                "table_name": "wb_test_analyst_budget_sheet1",
                 "row_count": 5,
                 "columns_schema": [{"name": "item", "type": "STRING"}],
                 "sample_preview": [],
@@ -135,7 +135,7 @@ def test_sanitize_content(mock_ingest, mock_upload, sample_xlsx_bytes):
         ],
     )
 
-    sanitized_content, modified = sanitize_content(content, user_id="ajiteshk")
+    sanitized_content, modified = sanitize_content(content, user_id="test_analyst")
     assert modified is True
     assert len(sanitized_content.parts) == 2
     # First part must be text (replaced excel)
@@ -148,13 +148,13 @@ def test_sanitize_content(mock_ingest, mock_upload, sample_xlsx_bytes):
 @patch("app.excel_plugin.upload_bytes_to_dropzone")
 @patch("app.excel_plugin.ingest_file")
 def test_sanitize_message_dict(mock_ingest, mock_upload, sample_xlsx_bytes):
-    mock_upload.return_value = "gs://dropzone/ajiteshk/uploaded.xlsx"
+    mock_upload.return_value = "gs://dropzone/test_analyst/uploaded.xlsx"
     mock_ingest.return_value = {
         "status": "SUCCESS",
         "sheets": [
             {
                 "sheet_name": "Sheet1",
-                "table_name": "wb_ajiteshk_uploaded_sheet1",
+                "table_name": "wb_test_analyst_uploaded_sheet1",
                 "row_count": 10,
                 "columns_schema": [{"name": "x", "type": "INT64"}],
                 "sample_preview": [],
@@ -177,11 +177,11 @@ def test_sanitize_message_dict(mock_ingest, mock_upload, sample_xlsx_bytes):
         ],
     }
 
-    sanitized = sanitize_message_dict(msg_dict, user_id="ajiteshk")
+    sanitized = sanitize_message_dict(msg_dict, user_id="test_analyst")
     assert len(sanitized["parts"]) == 2
     assert "inlineData" not in sanitized["parts"][0]
     assert "text" in sanitized["parts"][0]
-    assert "wb_ajiteshk_uploaded_sheet1" in sanitized["parts"][0]["text"]
+    assert "wb_test_analyst_uploaded_sheet1" in sanitized["parts"][0]["text"]
     assert sanitized["parts"][1]["text"] == "Analyze this file"
 
 
@@ -189,13 +189,13 @@ def test_sanitize_message_dict(mock_ingest, mock_upload, sample_xlsx_bytes):
 @patch("app.excel_plugin.upload_bytes_to_dropzone")
 @patch("app.excel_plugin.ingest_file")
 async def test_plugin_on_user_message_callback(mock_ingest, mock_upload, sample_xlsx_bytes):
-    mock_upload.return_value = "gs://dropzone/ajiteshk/test.xlsx"
+    mock_upload.return_value = "gs://dropzone/test_analyst/test.xlsx"
     mock_ingest.return_value = {
         "status": "SUCCESS",
         "sheets": [
             {
                 "sheet_name": "Sheet1",
-                "table_name": "wb_ajiteshk_test_sheet1",
+                "table_name": "wb_test_analyst_test_sheet1",
                 "row_count": 1,
                 "columns_schema": [],
                 "sample_preview": [],
@@ -205,7 +205,7 @@ async def test_plugin_on_user_message_callback(mock_ingest, mock_upload, sample_
 
     plugin = ExcelSpreadsheetIngestionPlugin()
     inv_context = MagicMock()
-    inv_context.user_id = "ajiteshk"
+    inv_context.user_id = "test_analyst"
 
     user_msg = types.Content(
         role="user",
@@ -223,20 +223,20 @@ async def test_plugin_on_user_message_callback(mock_ingest, mock_upload, sample_
     )
     assert result is not None
     assert result.parts[0].inline_data is None
-    assert "wb_ajiteshk_test_sheet1" in result.parts[0].text
+    assert "wb_test_analyst_test_sheet1" in result.parts[0].text
 
 
 @pytest.mark.asyncio
 @patch("app.excel_plugin.upload_bytes_to_dropzone")
 @patch("app.excel_plugin.ingest_file")
 async def test_before_model_callback_hook(mock_ingest, mock_upload, sample_xlsx_bytes):
-    mock_upload.return_value = "gs://dropzone/ajiteshk/hook.xlsx"
+    mock_upload.return_value = "gs://dropzone/test_analyst/hook.xlsx"
     mock_ingest.return_value = {
         "status": "SUCCESS",
         "sheets": [
             {
                 "sheet_name": "Sheet1",
-                "table_name": "wb_ajiteshk_hook_sheet1",
+                "table_name": "wb_test_analyst_hook_sheet1",
                 "row_count": 1,
                 "columns_schema": [],
                 "sample_preview": [],
@@ -245,7 +245,7 @@ async def test_before_model_callback_hook(mock_ingest, mock_upload, sample_xlsx_
     }
 
     cb_context = MagicMock()
-    cb_context.user_id = "ajiteshk"
+    cb_context.user_id = "test_analyst"
 
     p_bad = types.Part.from_bytes(
         data=sample_xlsx_bytes,
@@ -256,4 +256,42 @@ async def test_before_model_callback_hook(mock_ingest, mock_upload, sample_xlsx_
 
     await before_model_callback_hook(callback_context=cb_context, llm_request=llm_req)
     assert llm_req.contents[0].parts[0].inline_data is None
-    assert "wb_ajiteshk_hook_sheet1" in llm_req.contents[0].parts[0].text
+    assert "wb_test_analyst_hook_sheet1" in llm_req.contents[0].parts[0].text
+
+
+@patch("app.excel_plugin.find_blob_in_dropzone")
+@patch("app.excel_plugin.ingest_file")
+def test_ge_file_tag_processing(mock_ingest, mock_find_blob):
+    mock_blob = MagicMock()
+    mock_blob.name = "9990001112223334445/Biscuits_All India_Data.xlsx"
+    mock_blob.size = 1690340
+    mock_find_blob.return_value = mock_blob
+
+    mock_ingest.return_value = {
+        "status": "SUCCESS",
+        "sheets": [
+            {
+                "sheet_name": "Sheet1",
+                "table_name": "wb_user_biscuits_sheet1",
+                "row_count": 100,
+                "columns": ["state", "sales_value"],
+            }
+        ],
+    }
+
+    ge_text = (
+        "From the given sales file, do a trend analysis\n"
+        "<start_of_user_uploaded_file: Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv, "
+        "original_filename: Biscuits_All India_Data.xlsx, sheet_name: Sheet1><end_of_user_uploaded_file: Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv>\n"
+    )
+
+    msg_dict = {
+        "role": "user",
+        "parts": [{"text": ge_text}],
+    }
+
+    sanitized = sanitize_message_dict(msg_dict, user_id="9990001112223334445")
+    assert "<start_of_user_uploaded_file:" not in sanitized["parts"][0]["text"]
+    assert "wb_user_biscuits_sheet1" in sanitized["parts"][0]["text"]
+    assert "Biscuits_All India_Data.xlsx" in sanitized["parts"][0]["text"]
+

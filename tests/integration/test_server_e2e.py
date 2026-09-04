@@ -263,3 +263,37 @@ def test_reasoning_engine_stream(server_fixture: subprocess.Popen[str]) -> None:
         for event in events
     )
     assert has_text, "No text content in reasoning_engine events"
+
+
+def test_reasoning_engine_agentspace_stream(server_fixture: subprocess.Popen[str]) -> None:
+    """AgentSpace / Gemini Enterprise invokes streaming_agent_run_with_events."""
+    req_json = json.dumps({
+        "user_id": f"u-{uuid.uuid4()}",
+        "message": {"role": "user", "parts": [{"text": "Hello from Gemini Enterprise"}]},
+    })
+    response = requests.post(
+        f"{BASE_URL}/api/stream_reasoning_engine",
+        headers=HEADERS,
+        json={
+            "class_method": "streaming_agent_run_with_events",
+            "input": {"request_json": req_json},
+        },
+        stream=True,
+        timeout=60,
+    )
+    assert response.status_code == 200
+
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert events, "No events from streaming_agent_run_with_events adapter"
+    flattened_events = []
+    for item in events:
+        if "events" in item and isinstance(item["events"], list):
+            flattened_events.extend(item["events"])
+        else:
+            flattened_events.append(item)
+    has_text = any(
+        (event.get("content") or {}).get("parts")
+        and any(part.get("text") for part in event["content"]["parts"])
+        for event in flattened_events
+    )
+    assert has_text, "No text content in AgentSpace streaming events"

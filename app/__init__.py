@@ -11,6 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+try:
+    import urllib3.contrib.pyopenssl
+    urllib3.contrib.pyopenssl.extract_from_urllib3()
+except Exception:
+    pass
 
 from .agent import app
 

@@ -53,7 +53,9 @@ from app.ingestion import (
     DEFAULT_TTL_HOURS,
     DROPZONE_BUCKET,
     PROJECT_ID,
+    find_blob_in_dropzone,
     ingest_file,
+    normalize_spreadsheet_filename,
     sanitize_user_id,
     upload_bytes_to_dropzone,
 )
@@ -222,8 +224,82 @@ def process_and_ingest_spreadsheet(
         )
 
 
+GE_FILE_TAG_REGEX = re.compile(
+    r"<start_of_user_uploaded_file:\s*([^,>]+)(?:,\s*original_filename:\s*([^,>]+))?(?:,\s*sheet_name:\s*([^,>]+))?>.*?<end_of_user_uploaded_file:[^>]*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def process_ge_text_tags(text: str, user_id: str) -> Tuple[str, bool]:
+    """Inspects text for Gemini Enterprise <start_of_user_uploaded_file:...> tags.
+
+    If found, dynamically resolves the spreadsheet from GCS dropzone, flattens to BigQuery,
+    and replaces the tag with a structured system grounding notification.
+    """
+    if not text or "<start_of_user_uploaded_file:" not in text:
+        return text, False
+
+    match = GE_FILE_TAG_REGEX.search(text)
+    if not match:
+        return text, False
+
+    orig_fname = match.group(2)
+    fallback_fname = match.group(1)
+
+    raw_filename = (orig_fname or fallback_fname or "uploaded_spreadsheet.xlsx").strip()
+    clean_filename = normalize_spreadsheet_filename(raw_filename)
+    user_slug = sanitize_user_id(user_id)
+
+    blob = find_blob_in_dropzone(clean_filename, user_id=user_slug)
+    if blob and (blob.size or 0) > 100:
+        gcs_uri = f"gs://{DROPZONE_BUCKET}/{blob.name}"
+        ingest_result = ingest_file(
+            file_path_or_uri=gcs_uri,
+            user_id=user_slug,
+            original_filename=clean_filename,
+            ttl_hours=DEFAULT_TTL_HOURS,
+        )
+        if ingest_result.get("status") == "SUCCESS":
+            sheets = ingest_result.get("sheets", [])
+            sheet_summaries = []
+            for s in sheets:
+                tbl = s.get("table_name")
+                s_name = s.get("sheet_name")
+                cnt = s.get("row_count", 0)
+                cols = s.get("columns", [])
+                sheet_summaries.append(
+                    f"  * Table: `{tbl}` (Sheet: '{s_name}', Rows: {cnt:,}, Columns: {cols})"
+                )
+            tables_desc = "\n".join(sheet_summaries)
+            notif = (
+                f"\n[System Notification: The user uploaded spreadsheet '{clean_filename}' ({blob.size:,} bytes).\n"
+                f"Dropzone Path: {gcs_uri}\n"
+                f"BigQuery Dataset: {PROJECT_ID}.{DATASET_ID} (Ephemeral 2-Hour TTL)\n"
+                f"Generated Tables:\n{tables_desc}\n\n"
+                f"INSTRUCTIONS FOR AGENT: The spreadsheet has been successfully parsed and flattened into BigQuery. "
+                f"Acknowledge the upload to the user, state the table and column names, and answer any analytical "
+                f"questions by querying these tables using the `run_analytical_query` tool.]\n"
+            )
+        else:
+            err = ingest_result.get("error", "Unknown ingestion error")
+            notif = f"\n[System Notification: The user uploaded spreadsheet '{clean_filename}', but ingestion failed: {err}. Please inform the user.]\n"
+    else:
+        notif = (
+            f"\n[System Notification: The user referenced spreadsheet '{clean_filename}'. "
+            f"Please check available tables with `list_available_spreadsheets` or files with `list_dropzone_files`.]\n"
+        )
+
+    replaced_text = GE_FILE_TAG_REGEX.sub(notif, text)
+    return replaced_text, True
+
+
 def sanitize_part(part: types.Part, user_id: str) -> Tuple[types.Part, bool]:
     """Inspects a Part and replaces spreadsheet content with ingested table text."""
+    if part.text and "<start_of_user_uploaded_file:" in part.text:
+        new_text, changed = process_ge_text_tags(part.text, user_id)
+        if changed:
+            return types.Part.from_text(text=new_text), True
+
     if not is_spreadsheet_part(part):
         return part, False
 
@@ -278,6 +354,13 @@ def sanitize_message_dict(message_dict_or_str: Any, user_id: str) -> Any:
         if not isinstance(p, dict):
             new_parts.append(p)
             continue
+
+        # Check for GE text tags
+        if "text" in p and isinstance(p["text"], str) and "<start_of_user_uploaded_file:" in p["text"]:
+            new_text, changed = process_ge_text_tags(p["text"], user_slug)
+            if changed:
+                new_parts.append({"text": new_text})
+                continue
 
         # Check inlineData / inline_data
         inline_data = p.get("inlineData") or p.get("inline_data")

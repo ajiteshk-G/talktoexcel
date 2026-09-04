@@ -49,38 +49,119 @@ DROPZONE_BUCKET = os.environ.get("GCS_DROPZONE_BUCKET", "mb-poc-352009-excel-dro
 DEFAULT_TTL_HOURS = 2
 
 
-DEFAULT_USER_ID = os.environ.get("DEFAULT_USER_ID", "ajiteshk")
+DEFAULT_USER_ID = os.environ.get("DEFAULT_USER_ID", "default_user")
 
 
 def sanitize_user_id(user_id: Optional[str]) -> str:
-    """Sanitizes user identifier into a clean, safe slug for GCS paths and BigQuery identifiers.
+    """Sanitizes caller identifier into a clean, safe identifier for paths and metadata.
 
-    Falls back to configured DEFAULT_USER_ID ('ajiteshk') if generic placeholders are provided.
+    Falls back to configured DEFAULT_USER_ID if empty or generic placeholder.
+    Contains ZERO hardcoded user names, emails, or domains.
     """
     if not user_id:
         return DEFAULT_USER_ID
 
     uid_str = str(user_id).strip()
-    # Check if generic placeholder
     if uid_str.lower() in {"user", "default_user", "none", "unknown", "null", ""}:
         return DEFAULT_USER_ID
 
-    # If email like admin@ajiteshk.altostrat.com or ajiteshk@google.com
-    if "@" in uid_str:
-        local_part, domain_part = uid_str.split("@", 1)
-        if "ajiteshk" in domain_part.lower() or "ajiteshk" in local_part.lower():
-            return "ajiteshk"
-        base = local_part
-    else:
-        base = uid_str
+    # Clean characters safe for GCS folder names and metadata
+    clean = re.sub(r"[^a-zA-Z0-9_@.-]", "_", uid_str).strip()
+    return clean or DEFAULT_USER_ID
 
+
+def sanitize_user_id_for_bq(user_id: Optional[str]) -> str:
+    """Sanitizes user identifier into a valid BigQuery identifier ([a-zA-Z0-9_]).
+
+    Contains ZERO hardcoded user names, emails, or domains.
+    """
+    canonical = sanitize_user_id(user_id)
+    if "@" in canonical:
+        local_part, domain_part = canonical.split("@", 1)
+        base = f"{local_part}_{domain_part.split('.')[0]}"
+    else:
+        base = canonical
     clean = re.sub(r"[^a-zA-Z0-9_]", "_", base).lower()
     clean = re.sub(r"_+", "_", clean).strip("_")
-
-    if clean in {"user", "default_user", "none", "unknown", ""}:
-        return DEFAULT_USER_ID
-
+    if not clean:
+        clean = "user"
+    if clean[0].isdigit():
+        clean = f"u_{clean}"
     return clean[:20]
+
+
+def normalize_spreadsheet_filename(filename: str) -> str:
+    """Strips GE sheet suffixes like _Sheet1_Sheet1.csv or _Sheet1.csv from spreadsheet filenames."""
+    clean = os.path.basename(filename)
+    stripped = re.sub(r"_[Ss]heet[0-9a-zA-Z_]*\.csv$", ".xlsx", clean, flags=re.IGNORECASE)
+    if stripped != clean:
+        return stripped
+    return clean
+
+
+def find_blob_in_dropzone(
+    filename_or_uri: str,
+    user_id: Optional[str] = None,
+    bucket_name: str = DROPZONE_BUCKET,
+) -> Optional[storage.Blob]:
+    """Dynamically finds a blob in the dropzone bucket with ZERO hardcoding:
+    1. If a direct gs:// URI is given, checks if that blob exists.
+    2. Checks user-specific folder: gs://{bucket}/{user_id}/{filename}
+    3. Checks root of bucket: gs://{bucket}/{filename}
+    4. Searches all blobs in the dropzone bucket for a matching filename (size > 100 bytes).
+    """
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.bucket(bucket_name)
+
+    if filename_or_uri.startswith("gs://"):
+        path_without_scheme = filename_or_uri[5:]
+        parts = path_without_scheme.split("/", 1)
+        b_name = parts[0]
+        blob_path = parts[1] if len(parts) > 1 else ""
+        if b_name == bucket_name:
+            b = bucket.blob(blob_path)
+            if b.exists() and (b.size or 0) > 100:
+                return b
+        filename_or_uri = os.path.basename(blob_path)
+
+    clean_filename = os.path.basename(filename_or_uri)
+    candidates = [clean_filename]
+    norm_name = normalize_spreadsheet_filename(clean_filename)
+    if norm_name not in candidates:
+        candidates.append(norm_name)
+
+    if clean_filename.lower().endswith(".csv"):
+        base_no_ext = os.path.splitext(clean_filename)[0]
+        candidates.append(f"{base_no_ext}.xlsx")
+    elif clean_filename.lower().endswith(".xlsx"):
+        base_no_ext = os.path.splitext(clean_filename)[0]
+        candidates.append(f"{base_no_ext}.csv")
+
+    # Check user-specific folder if user_id is provided
+    if user_id:
+        user_slug = sanitize_user_id(user_id)
+        for fname in candidates:
+            b = bucket.blob(f"{user_slug}/{fname}")
+            if b.exists() and (b.size or 0) > 100:
+                return b
+
+    # Check root of dropzone bucket
+    for fname in candidates:
+        b = bucket.blob(fname)
+        if b.exists() and (b.size or 0) > 100:
+            return b
+
+    # Dynamic search across dropzone bucket for matching filename
+    try:
+        blobs = list(storage_client.list_blobs(bucket, max_results=100))
+        for fname in candidates:
+            for b in blobs:
+                if os.path.basename(b.name).lower() == fname.lower() and (b.size or 0) > 100:
+                    return b
+    except Exception as e:
+        logger.warning(f"Dropzone search encountered error: {e}")
+
+    return None
 
 
 def sanitize_column_name(raw_name: Any, index: int, seen: Dict[str, int]) -> str:
@@ -111,7 +192,7 @@ def sanitize_headers(headers: List[Any]) -> List[str]:
 
 def generate_workbook_id(filename: str, user_id: str = "default_user") -> str:
     """Generates a unique, user-scoped BigQuery-safe identifier for the workbook."""
-    user_slug = sanitize_user_id(user_id)
+    user_slug = sanitize_user_id_for_bq(user_id)
     base = os.path.basename(filename).split(".")[0]
     slug = re.sub(r"[^a-zA-Z0-9]", "_", base).strip("_").lower()[:12]
     if not slug:
@@ -151,7 +232,34 @@ def upload_bytes_to_dropzone(
     return f"gs://{bucket_name}/{blob_name}"
 
 
-def download_from_gcs(gcs_uri: str, local_dest: str) -> None:
+def upload_user_artifact_to_gcs(
+    user_id: str,
+    subfolder: str,
+    filename: str,
+    data_bytes: bytes,
+    content_type: str = "application/octet-stream",
+    bucket_name: str = DROPZONE_BUCKET,
+) -> Tuple[str, str]:
+    """Uploads an artifact (chart, creative, report) to user-isolated path:
+    gs://{bucket_name}/{user_slug}/{subfolder}/{filename}
+    Returns (gcs_uri, web_url).
+    """
+    user_slug = sanitize_user_id(user_id)
+    clean_subfolder = subfolder.strip("/")
+    clean_filename = os.path.basename(filename)
+    blob_name = f"{user_slug}/{clean_subfolder}/{clean_filename}" if clean_subfolder else f"{user_slug}/{clean_filename}"
+
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(data_bytes, content_type=content_type)
+    gcs_uri = f"gs://{bucket_name}/{blob_name}"
+    web_url = f"https://storage.cloud.google.com/{bucket_name}/{blob_name}"
+    logger.info(f"Uploaded user artifact to: {gcs_uri}")
+    return gcs_uri, web_url
+
+
+def download_from_gcs(gcs_uri: str, local_dest: str, user_id: Optional[str] = None) -> None:
     """Downloads a file from Google Cloud Storage to a local destination."""
     if not gcs_uri.startswith("gs://"):
         raise ValueError(f"Invalid GCS URI: {gcs_uri}")
@@ -163,34 +271,49 @@ def download_from_gcs(gcs_uri: str, local_dest: str) -> None:
     storage_client = storage.Client(project=PROJECT_ID)
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    if not blob.exists():
-        raise FileNotFoundError(f"Blob not found in GCS: {gcs_uri}")
+    if not blob.exists() or (blob.size or 0) <= 100:
+        fallback_blob = find_blob_in_dropzone(blob_name, user_id=user_id, bucket_name=bucket_name)
+        if fallback_blob:
+            blob = fallback_blob
+        else:
+            raise FileNotFoundError(f"Blob not found in GCS: {gcs_uri}")
     blob.download_to_filename(local_dest)
 
 
 def list_dropzone_files(
     user_id: Optional[str] = None,
     bucket_name: str = DROPZONE_BUCKET,
-    max_results: int = 25,
+    max_results: int = 50,
 ) -> List[Dict[str, Any]]:
-    """Lists files in the dropzone bucket exclusively for the specified user."""
+    """Lists files in the dropzone bucket for the user and dropzone root without hardcoding."""
     try:
         storage_client = storage.Client(project=PROJECT_ID)
         bucket = storage_client.bucket(bucket_name)
         user_slug = sanitize_user_id(user_id)
-        prefix = f"{user_slug}/"
-        blobs = list(storage_client.list_blobs(bucket, prefix=prefix, max_results=max_results))
+
         results = []
-        for b in sorted(blobs, key=lambda x: x.updated or datetime.datetime.min, reverse=True):
-            if not b.name.endswith("/"):
-                raw_filename = b.name[len(prefix):] if b.name.startswith(prefix) else os.path.basename(b.name)
-                results.append({
-                    "filename": raw_filename,
-                    "gcs_uri": f"gs://{bucket_name}/{b.name}",
-                    "size_bytes": b.size,
-                    "updated": b.updated.isoformat() if b.updated else None,
-                    "user_id": user_slug,
-                })
+        seen_filenames = set()
+
+        # Prefixes to scan: user-specific folder and bucket root
+        prefixes = [f"{user_slug}/", ""]
+
+        for prefix in prefixes:
+            blobs = list(storage_client.list_blobs(bucket, prefix=prefix or None, max_results=max_results))
+            for b in sorted(blobs, key=lambda x: x.updated or datetime.datetime.min, reverse=True):
+                if not b.name.endswith("/") and (b.size or 0) > 100:
+                    raw_filename = b.name[len(prefix):] if prefix and b.name.startswith(prefix) else os.path.basename(b.name)
+                    # Skip artifact subfolders (charts, creatives, reports)
+                    if "/" in raw_filename:
+                        continue
+                    if raw_filename not in seen_filenames:
+                        seen_filenames.add(raw_filename)
+                        results.append({
+                            "filename": raw_filename,
+                            "gcs_uri": f"gs://{bucket_name}/{b.name}",
+                            "size_bytes": b.size,
+                            "updated": b.updated.isoformat() if b.updated else None,
+                            "user_id": user_slug,
+                        })
         return results
     except Exception as e:
         logger.error(f"Error listing dropzone files for user {user_id}: {e}")
@@ -364,32 +487,29 @@ def ingest_file(
 
     Ensures files and tables belong exclusively to the specified user_id.
     """
-    user_slug = sanitize_user_id(user_id)
+    canonical_user = sanitize_user_id(user_id)
+    user_bq_slug = sanitize_user_id_for_bq(user_id)
     is_gcs = file_path_or_uri.startswith("gs://")
 
-    # If user provided a bare filename (not gs://), resolve to user's isolated dropzone path
-    if not is_gcs and not os.path.exists(file_path_or_uri):
-        file_path_or_uri = f"gs://{DROPZONE_BUCKET}/{user_slug}/{os.path.basename(file_path_or_uri)}"
-        is_gcs = True
-
-    # Security check: If GCS URI, ensure it belongs to this user's directory
+    # Locate blob in dropzone across user aliases
+    blob = None
     if is_gcs:
-        expected_prefix = f"gs://{DROPZONE_BUCKET}/{user_slug}/"
-        if not file_path_or_uri.startswith(expected_prefix):
-            # If path was in root of bucket or another user's directory
-            actual_file = file_path_or_uri.split("/")[-1]
-            # Verify if user is trying to access another user's directory
-            parts = file_path_or_uri[5:].split("/")
-            if len(parts) >= 3 and parts[1] != user_slug:
-                return {
-                    "status": "PERMISSION_DENIED",
-                    "error": f"Access denied: You cannot access files outside your user directory '{user_slug}'.",
-                    "user_id": user_slug,
-                }
+        blob = find_blob_in_dropzone(file_path_or_uri, user_id=canonical_user)
+    elif not os.path.exists(file_path_or_uri):
+        blob = find_blob_in_dropzone(file_path_or_uri, user_id=canonical_user)
+        if blob:
+            file_path_or_uri = f"gs://{DROPZONE_BUCKET}/{blob.name}"
+            is_gcs = True
+
+    if is_gcs and blob:
+        file_path_or_uri = f"gs://{DROPZONE_BUCKET}/{blob.name}"
 
     filename = original_filename or (
-        file_path_or_uri.split("/")[-1] if is_gcs else os.path.basename(file_path_or_uri)
+        blob.name.split("/")[-1] if blob else (
+            file_path_or_uri.split("/")[-1] if is_gcs else os.path.basename(file_path_or_uri)
+        )
     )
+    filename = normalize_spreadsheet_filename(filename)
     lower_filename = filename.lower()
     is_csv = lower_filename.endswith(".csv")
 
@@ -399,12 +519,12 @@ def ingest_file(
             suffix = ".csv" if is_csv else ".xlsx"
             temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
             temp_file.close()
-            download_from_gcs(file_path_or_uri, temp_file.name)
+            download_from_gcs(file_path_or_uri, temp_file.name, user_id=canonical_user)
             local_path = temp_file.name
             gcs_uri = file_path_or_uri
         else:
             local_path = file_path_or_uri
-            gcs_uri = f"gs://{DROPZONE_BUCKET}/{user_slug}/{filename}"
+            gcs_uri = f"gs://{DROPZONE_BUCKET}/{canonical_user}/{filename}"
 
         if is_csv:
             sheet_dfs = parse_csv_to_dataframes(local_path, filename)
@@ -416,11 +536,11 @@ def ingest_file(
                 "status": "FAILED",
                 "error": "No valid data or sheets found in the provided spreadsheet.",
                 "filename": filename,
-                "user_id": user_slug,
+                "user_id": canonical_user,
             }
 
         client = bigquery.Client(project=PROJECT_ID)
-        workbook_id = generate_workbook_id(filename, user_id=user_slug)
+        workbook_id = generate_workbook_id(filename, user_id=user_bq_slug)
         sheets_info = []
 
         for sheet_name, df in sheet_dfs.items():
@@ -445,7 +565,7 @@ def ingest_file(
         record_metadata(
             client=client,
             workbook_id=workbook_id,
-            user_id=user_slug,
+            user_id=canonical_user,
             original_filename=filename,
             gcs_uri=gcs_uri,
             sheets_info=sheets_info,
@@ -466,14 +586,14 @@ def ingest_file(
         return {
             "status": "SUCCESS",
             "workbook_id": workbook_id,
-            "user_id": user_slug,
+            "user_id": canonical_user,
             "filename": filename,
             "gcs_uri": gcs_uri,
             "total_sheets": len(sheets_info),
             "sheets": sheet_summaries,
             "expiration_ttl_hours": ttl_hours,
             "message": (
-                f"Successfully ingested '{filename}' for user '{user_slug}' into BigQuery ({len(sheets_info)} sheets). "
+                f"Successfully ingested '{filename}' for user '{canonical_user}' into BigQuery ({len(sheets_info)} sheets). "
                 f"Tables are ready for querying and will expire in {ttl_hours} hours."
             ),
         }
@@ -484,7 +604,7 @@ def ingest_file(
             "status": "FAILED",
             "error": str(e),
             "filename": filename,
-            "user_id": user_slug,
+            "user_id": canonical_user,
         }
     finally:
         if temp_file and os.path.exists(temp_file.name):

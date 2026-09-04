@@ -46,12 +46,13 @@ def get_session_service():
     if agent_engine_id := os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
         from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 
+        loc = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION")
+        if not loc or loc == "global":
+            loc = os.environ.get("GOOGLE_CLOUD_REGION") or "us-central1"
+        proj = os.environ.get("GOOGLE_CLOUD_PROJECT") or "mb-poc-352009"
         return VertexAiSessionService(
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
-            # Runtime-injected agent-engine region, not GOOGLE_CLOUD_LOCATION
-            # (which agent.py pins to "global").
-            location=os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION")
-            or os.environ.get("GOOGLE_CLOUD_LOCATION"),
+            project=proj,
+            location=loc,
             agent_engine_id=agent_engine_id,
         )
     from google.adk.sessions.in_memory_session_service import InMemorySessionService

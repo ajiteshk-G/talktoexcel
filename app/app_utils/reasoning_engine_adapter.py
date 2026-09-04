@@ -113,19 +113,40 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
     @app.post("/api/stream_reasoning_engine")
     async def stream_query(request: Request) -> responses.StreamingResponse:
         body = await request.json()
+        class_method = body.get("class_method", "")
+        method = resolve_method(class_method, streaming=True)
         input_kwargs = body.get("input") or {}
         user_id = extract_caller_user_id(request, input_kwargs.get("user_id"))
-        input_kwargs["user_id"] = user_id
-        if "message" in input_kwargs:
-            input_kwargs["message"] = sanitize_message_dict(input_kwargs["message"], user_id)
-        if "session_events" in input_kwargs and isinstance(input_kwargs["session_events"], list):
-            input_kwargs["session_events"] = [
-                sanitize_message_dict(ev, user_id) for ev in input_kwargs["session_events"]
-            ]
-        method = resolve_method(body["class_method"], streaming=True)
+
+        if class_method == "streaming_agent_run_with_events":
+            req_str = input_kwargs.get("request_json", "{}")
+            try:
+                req_obj = json.loads(req_str) if isinstance(req_str, str) else req_str
+                req_user = extract_caller_user_id(request, req_obj.get("user_id"))
+                req_obj["user_id"] = req_user
+                if "message" in req_obj:
+                    req_obj["message"] = sanitize_message_dict(req_obj["message"], req_user)
+                req_str = json.dumps(req_obj)
+            except Exception:
+                pass
+            call_kwargs = {"request_json": req_str}
+        else:
+            call_kwargs = dict(input_kwargs)
+            sig = inspect.signature(method)
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if "user_id" in sig.parameters or has_varkw:
+                call_kwargs["user_id"] = user_id
+            if "message" in call_kwargs:
+                call_kwargs["message"] = sanitize_message_dict(call_kwargs["message"], user_id)
+            if "session_events" in call_kwargs and isinstance(call_kwargs["session_events"], list):
+                call_kwargs["session_events"] = [
+                    sanitize_message_dict(ev, user_id) for ev in call_kwargs["session_events"]
+                ]
+            if not has_varkw:
+                call_kwargs = {k: v for k, v in call_kwargs.items() if k in sig.parameters}
 
         async def generator():
-            async for event in method(**input_kwargs):
+            async for event in method(**call_kwargs):
                 yield json.dumps(event) + "\n"
 
         return responses.StreamingResponse(
@@ -135,20 +156,42 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
     @app.post("/api/reasoning_engine")
     async def query(request: Request) -> responses.JSONResponse:
         body = await request.json()
-        method = resolve_method(body["class_method"], streaming=False)
+        class_method = body.get("class_method", "")
+        method = resolve_method(class_method, streaming=False)
         input_kwargs = body.get("input") or {}
         user_id = extract_caller_user_id(request, input_kwargs.get("user_id"))
-        input_kwargs["user_id"] = user_id
-        if "message" in input_kwargs:
-            input_kwargs["message"] = sanitize_message_dict(input_kwargs["message"], user_id)
-        if "session_events" in input_kwargs and isinstance(input_kwargs["session_events"], list):
-            input_kwargs["session_events"] = [
-                sanitize_message_dict(ev, user_id) for ev in input_kwargs["session_events"]
-            ]
+
+        if class_method == "agent_run_with_events":
+            req_str = input_kwargs.get("request_json", "{}")
+            try:
+                req_obj = json.loads(req_str) if isinstance(req_str, str) else req_str
+                req_user = extract_caller_user_id(request, req_obj.get("user_id"))
+                req_obj["user_id"] = req_user
+                if "message" in req_obj:
+                    req_obj["message"] = sanitize_message_dict(req_obj["message"], req_user)
+                req_str = json.dumps(req_obj)
+            except Exception:
+                pass
+            call_kwargs = {"request_json": req_str}
+        else:
+            call_kwargs = dict(input_kwargs)
+            sig = inspect.signature(method)
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if "user_id" in sig.parameters or has_varkw:
+                call_kwargs["user_id"] = user_id
+            if "message" in call_kwargs:
+                call_kwargs["message"] = sanitize_message_dict(call_kwargs["message"], user_id)
+            if "session_events" in call_kwargs and isinstance(call_kwargs["session_events"], list):
+                call_kwargs["session_events"] = [
+                    sanitize_message_dict(ev, user_id) for ev in call_kwargs["session_events"]
+                ]
+            if not has_varkw:
+                call_kwargs = {k: v for k, v in call_kwargs.items() if k in sig.parameters}
+
         output = (
-            await method(**input_kwargs)
+            await method(**call_kwargs)
             if inspect.iscoroutinefunction(method)
-            else method(**input_kwargs)
+            else method(**call_kwargs)
         )
         return responses.JSONResponse(
             content=encoders.jsonable_encoder({"output": output})

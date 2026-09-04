@@ -30,22 +30,23 @@ def test_sanitize_headers():
 
 
 def test_sanitize_user_id():
-    assert sanitize_user_id("ajiteshk@google.com") == "ajiteshk"
-    assert sanitize_user_id("finance-user.123@corp.com") == "finance_user_123"
-    assert sanitize_user_id("") == "ajiteshk"
-    assert sanitize_user_id(None) == "ajiteshk"
+    assert sanitize_user_id("finance-lead@example.com") == "finance-lead@example.com"
+    assert sanitize_user_id("9876543210987654321") == "9876543210987654321"
+    assert sanitize_user_id("finance lead!#$") == "finance_lead___"
+    assert sanitize_user_id("") == "default_user"
+    assert sanitize_user_id(None) == "default_user"
 
 
 def test_workbook_and_table_name_generation():
-    wb_id = generate_workbook_id("Quarterly Financials 2026.xlsx", user_id="ajiteshk@google.com")
-    assert wb_id.startswith("wb_ajiteshk_quarterly_fi")
+    wb_id = generate_workbook_id("Quarterly Financials 2026.xlsx", user_id="finance_lead")
+    assert wb_id.startswith("wb_finance_lead_quarterly_fi")
     tbl_name = generate_table_name(wb_id, "Balance Sheet")
-    assert tbl_name.startswith("wb_ajiteshk_")
+    assert tbl_name.startswith("wb_finance_lead_")
     assert "balance_sheet" in tbl_name
 
 
 def test_sql_validator_allows_user_tables():
-    user = "ajiteshk"
+    user = "test_analyst"
     valid_queries = [
         f"SELECT * FROM `mb-poc-352009.adhoc_excel_analytics.wb_{user}_test`",
         f"SELECT department, SUM(spend) FROM `wb_{user}_sales` GROUP BY department ORDER BY 2 DESC",
@@ -57,7 +58,7 @@ def test_sql_validator_allows_user_tables():
 
 
 def test_sql_validator_blocks_cross_user_tables():
-    user = "ajiteshk"
+    user = "test_analyst"
     other_user_queries = [
         "SELECT * FROM `mb-poc-352009.adhoc_excel_analytics.wb_john_test`",
         "SELECT * FROM wb_alice_financials",
@@ -70,7 +71,7 @@ def test_sql_validator_blocks_cross_user_tables():
 
 
 def test_sql_validator_blocks_dangerous_operations():
-    user = "ajiteshk"
+    user = "test_analyst"
     forbidden_queries = [
         f"DROP TABLE `mb-poc-352009.adhoc_excel_analytics.wb_{user}_test`",
         f"DELETE FROM `wb_{user}_test` WHERE 1=1",
