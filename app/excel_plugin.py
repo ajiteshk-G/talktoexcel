@@ -224,29 +224,18 @@ def process_and_ingest_spreadsheet(
         )
 
 
-GE_FILE_TAG_REGEX = re.compile(
-    r"<start_of_user_uploaded_file:\s*([^,>]+)(?:,\s*original_filename:\s*([^,>]+))?(?:,\s*sheet_name:\s*([^,>]+))?>.*?<end_of_user_uploaded_file:[^>]*>",
-    re.DOTALL | re.IGNORECASE,
+GE_START_TAG_REGEX = re.compile(
+    r"<start_of_user_uploaded_file:\s*([^,>]+)(?:,\s*original_filename:\s*([^,>]+))?(?:,\s*sheet_name:\s*([^,>]+))?>",
+    re.IGNORECASE,
+)
+GE_END_TAG_REGEX = re.compile(
+    r"<end_of_user_uploaded_file:[^>]*>",
+    re.IGNORECASE,
 )
 
 
-def process_ge_text_tags(text: str, user_id: str) -> Tuple[str, bool]:
-    """Inspects text for Gemini Enterprise <start_of_user_uploaded_file:...> tags.
-
-    If found, dynamically resolves the spreadsheet from GCS dropzone, flattens to BigQuery,
-    and replaces the tag with a structured system grounding notification.
-    """
-    if not text or "<start_of_user_uploaded_file:" not in text:
-        return text, False
-
-    match = GE_FILE_TAG_REGEX.search(text)
-    if not match:
-        return text, False
-
-    orig_fname = match.group(2)
-    fallback_fname = match.group(1)
-
-    raw_filename = (orig_fname or fallback_fname or "uploaded_spreadsheet.xlsx").strip()
+def build_ge_ingestion_notification(raw_filename: str, user_id: str) -> str:
+    """Finds and ingests a spreadsheet identified by GE tag, returning the system notification."""
     clean_filename = normalize_spreadsheet_filename(raw_filename)
     user_slug = sanitize_user_id(user_id)
 
@@ -271,25 +260,47 @@ def process_ge_text_tags(text: str, user_id: str) -> Tuple[str, bool]:
                     f"  * Table: `{tbl}` (Sheet: '{s_name}', Rows: {cnt:,}, Columns: {cols})"
                 )
             tables_desc = "\n".join(sheet_summaries)
-            notif = (
+            return (
                 f"\n[System Notification: The user uploaded spreadsheet '{clean_filename}' ({blob.size:,} bytes).\n"
                 f"Dropzone Path: {gcs_uri}\n"
                 f"BigQuery Dataset: {PROJECT_ID}.{DATASET_ID} (Ephemeral 2-Hour TTL)\n"
                 f"Generated Tables:\n{tables_desc}\n\n"
                 f"INSTRUCTIONS FOR AGENT: The spreadsheet has been successfully parsed and flattened into BigQuery. "
                 f"Acknowledge the upload to the user, state the table and column names, and answer any analytical "
-                f"questions by querying these tables using the `run_analytical_query` tool.]\n"
+                f"questions by querying these tables using the `run_analytical_query` tool. "
+                f"NEVER attempt to load raw data with load_artifacts—query BigQuery instead.]\n"
             )
         else:
             err = ingest_result.get("error", "Unknown ingestion error")
-            notif = f"\n[System Notification: The user uploaded spreadsheet '{clean_filename}', but ingestion failed: {err}. Please inform the user.]\n"
+            return f"\n[System Notification: The user uploaded spreadsheet '{clean_filename}', but ingestion failed: {err}. Please inform the user.]\n"
     else:
-        notif = (
+        return (
             f"\n[System Notification: The user referenced spreadsheet '{clean_filename}'. "
             f"Please check available tables with `list_available_spreadsheets` or files with `list_dropzone_files`.]\n"
         )
 
-    replaced_text = GE_FILE_TAG_REGEX.sub(notif, text)
+
+def process_ge_text_tags(text: str, user_id: str) -> Tuple[str, bool]:
+    """Inspects text for Gemini Enterprise <start_of_user_uploaded_file:...> tags.
+
+    If found, dynamically resolves the spreadsheet from GCS dropzone, flattens to BigQuery,
+    and replaces the tag with a structured system grounding notification.
+    """
+    if not text or "<start_of_user_uploaded_file:" not in text:
+        return text, False
+
+    match = GE_START_TAG_REGEX.search(text)
+    if not match:
+        return text, False
+
+    orig_fname = match.group(2)
+    fallback_fname = match.group(1)
+    raw_filename = (orig_fname or fallback_fname or "uploaded_spreadsheet.xlsx").strip()
+    notif = build_ge_ingestion_notification(raw_filename, user_id)
+
+    # Strip start and end tags
+    replaced_text = GE_START_TAG_REGEX.sub(notif, text)
+    replaced_text = GE_END_TAG_REGEX.sub("", replaced_text).strip()
     return replaced_text, True
 
 
@@ -318,17 +329,48 @@ def sanitize_part(part: types.Part, user_id: str) -> Tuple[types.Part, bool]:
 
 
 def sanitize_content(content: types.Content, user_id: str) -> Tuple[types.Content, bool]:
-    """Sanitizes all parts in a types.Content object."""
+    """Sanitizes all parts in a types.Content object, supporting single-part and multi-part GE tags."""
     if not content.parts:
         return content, False
 
-    new_parts = []
+    user_slug = sanitize_user_id(user_id)
     modified = False
+    new_parts: List[types.Part] = []
+
     for part in content.parts:
-        new_part, changed = sanitize_part(part, user_id)
-        new_parts.append(new_part)
-        if changed:
+        # Binary spreadsheet part
+        if is_spreadsheet_part(part):
+            file_bytes, filename = extract_part_bytes_and_name(part)
+            if file_bytes:
+                notif = process_and_ingest_spreadsheet(
+                    file_bytes=file_bytes, filename=filename, user_id=user_slug
+                )
+            else:
+                notif = (
+                    f"[System Notification: The user uploaded spreadsheet '{filename}', but the binary payload could not be extracted. "
+                    f"Please ask the user to re-upload the file.]"
+                )
+            new_parts.append(types.Part.from_text(text=notif))
             modified = True
+            continue
+
+        # Text part with GE tags
+        if part.text and ("<start_of_user_uploaded_file:" in part.text or "<end_of_user_uploaded_file:" in part.text):
+            text = part.text
+            if "<start_of_user_uploaded_file:" in text:
+                for match in GE_START_TAG_REGEX.finditer(text):
+                    orig_fname = match.group(2)
+                    fallback_fname = match.group(1)
+                    raw_filename = (orig_fname or fallback_fname or "uploaded_spreadsheet.xlsx").strip()
+                    notif = build_ge_ingestion_notification(raw_filename, user_slug)
+                    text = GE_START_TAG_REGEX.sub(notif, text)
+            text = GE_END_TAG_REGEX.sub("", text).strip()
+            if text:
+                new_parts.append(types.Part.from_text(text=text))
+            modified = True
+            continue
+
+        new_parts.append(part)
 
     if modified:
         return types.Content(role=content.role, parts=new_parts), True
@@ -337,8 +379,7 @@ def sanitize_content(content: types.Content, user_id: str) -> Tuple[types.Conten
 
 def sanitize_message_dict(message_dict_or_str: Any, user_id: str) -> Any:
     """Sanitizes a raw JSON message dict (from reasoning_engine or ADK API HTTP ingress)
-
-    replacing any inlineData/fileData spreadsheets with ingested table notifications.
+    replacing any inlineData/fileData spreadsheets and multi-part GE text tags with ingested table notifications.
     """
     if not isinstance(message_dict_or_str, dict):
         return message_dict_or_str
@@ -347,8 +388,8 @@ def sanitize_message_dict(message_dict_or_str: Any, user_id: str) -> Any:
     if not isinstance(parts, list):
         return message_dict_or_str
 
-    new_parts = []
     user_slug = sanitize_user_id(user_id)
+    new_parts = []
 
     for p in parts:
         if not isinstance(p, dict):
@@ -356,11 +397,21 @@ def sanitize_message_dict(message_dict_or_str: Any, user_id: str) -> Any:
             continue
 
         # Check for GE text tags
-        if "text" in p and isinstance(p["text"], str) and "<start_of_user_uploaded_file:" in p["text"]:
-            new_text, changed = process_ge_text_tags(p["text"], user_slug)
-            if changed:
-                new_parts.append({"text": new_text})
-                continue
+        if "text" in p and isinstance(p["text"], str) and (
+            "<start_of_user_uploaded_file:" in p["text"] or "<end_of_user_uploaded_file:" in p["text"]
+        ):
+            text = p["text"]
+            if "<start_of_user_uploaded_file:" in text:
+                for match in GE_START_TAG_REGEX.finditer(text):
+                    orig_fname = match.group(2)
+                    fallback_fname = match.group(1)
+                    raw_filename = (orig_fname or fallback_fname or "uploaded_spreadsheet.xlsx").strip()
+                    notif = build_ge_ingestion_notification(raw_filename, user_slug)
+                    text = GE_START_TAG_REGEX.sub(notif, text)
+            text = GE_END_TAG_REGEX.sub("", text).strip()
+            if text:
+                new_parts.append({"text": text})
+            continue
 
         # Check inlineData / inline_data
         inline_data = p.get("inlineData") or p.get("inline_data")
@@ -419,7 +470,6 @@ def sanitize_message_dict(message_dict_or_str: Any, user_id: str) -> Any:
 
 class ExcelSpreadsheetIngestionPlugin(BasePlugin):
     """ADK Plugin that intercepts user-uploaded Excel spreadsheets in chat,
-
     automatically uploads them to GCS dropzone, flattens them into BigQuery
     with a 2-hour TTL, and replaces the unsupported MIME type with a text
     prompt grounding the model in the ingested table schemas.
@@ -449,26 +499,17 @@ class ExcelSpreadsheetIngestionPlugin(BasePlugin):
         llm_request: LlmRequest,
     ) -> Optional[LlmResponse]:
         """Safety net: ensures llm_request.contents NEVER contains an unsupported
-
-        spreadsheet MIME type when calling Vertex AI Gemini.
+        spreadsheet MIME type or raw GE upload tags when calling Vertex AI Gemini.
         """
         user_id = sanitize_user_id(callback_context.user_id)
         if not llm_request.contents:
             return None
 
-        modified = False
-        for content in llm_request.contents:
-            if not content.parts:
-                continue
-            for i, part in enumerate(content.parts):
-                if is_spreadsheet_part(part):
-                    new_part, changed = sanitize_part(part, user_id)
-                    if changed:
-                        content.parts[i] = new_part
-                        modified = True
-
-        if modified:
-            logger.info(f"before_model_callback sanitized llm_request.contents for user: {user_id}")
+        for i, content in enumerate(llm_request.contents):
+            new_content, changed = sanitize_content(content, user_id)
+            if changed:
+                llm_request.contents[i] = new_content
+                logger.info(f"before_model_callback sanitized content for user: {user_id}")
 
         return None
 
@@ -482,16 +523,12 @@ async def before_model_callback_hook(
     if not llm_request.contents:
         return None
 
-    for content in llm_request.contents:
-        if not content.parts:
-            continue
-        for i, part in enumerate(content.parts):
-            if is_spreadsheet_part(part):
-                new_part, changed = sanitize_part(part, user_id)
-                if changed:
-                    content.parts[i] = new_part
-                    logger.info(
-                        f"Agent before_model_callback replaced spreadsheet part with text for {user_id}"
-                    )
+    for i, content in enumerate(llm_request.contents):
+        new_content, changed = sanitize_content(content, user_id)
+        if changed:
+            llm_request.contents[i] = new_content
+            logger.info(
+                f"Agent before_model_callback replaced spreadsheet content with text for {user_id}"
+            )
 
     return None

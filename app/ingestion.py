@@ -153,10 +153,24 @@ def find_blob_in_dropzone(
 
     # Dynamic search across dropzone bucket for matching filename
     try:
-        blobs = list(storage_client.list_blobs(bucket, max_results=100))
+        blobs = list(storage_client.list_blobs(bucket, max_results=200))
         for fname in candidates:
+            fname_lower = fname.lower()
             for b in blobs:
-                if os.path.basename(b.name).lower() == fname.lower() and (b.size or 0) > 100:
+                if (b.size or 0) <= 100:
+                    continue
+                b_name_lower = b.name.lower()
+                b_base = os.path.basename(b.name).lower()
+                # 1. Direct basename match
+                if b_base == fname_lower:
+                    return b
+                # 2. ADK artifact path with version suffix /0 (e.g. app/.../filename/0)
+                if b_base.isdigit():
+                    parent_part = b.name.rstrip("/0123456789").split("/")[-1].lower()
+                    if parent_part == fname_lower or parent_part.startswith(fname_lower):
+                        return b
+                # 3. Filename contained as path segment
+                if f"/{fname_lower}/" in f"/{b_name_lower}/" or f"/{fname_lower}" in b_name_lower:
                     return b
     except Exception as e:
         logger.warning(f"Dropzone search encountered error: {e}")
@@ -526,10 +540,18 @@ def ingest_file(
             local_path = file_path_or_uri
             gcs_uri = f"gs://{DROPZONE_BUCKET}/{canonical_user}/{filename}"
 
-        if is_csv:
-            sheet_dfs = parse_csv_to_dataframes(local_path, filename)
-        else:
+        def _is_excel_binary(path: str) -> bool:
+            try:
+                with open(path, "rb") as f:
+                    hdr = f.read(8)
+                return hdr.startswith(b"PK\x03\x04") or hdr.startswith(b"\xd0\xcf\x11\xe0") or hdr.startswith(b"\x09\x08")
+            except Exception:
+                return False
+
+        if _is_excel_binary(local_path):
             sheet_dfs = parse_excel_to_dataframes(local_path)
+        else:
+            sheet_dfs = parse_csv_to_dataframes(local_path, filename)
 
         if not sheet_dfs:
             return {

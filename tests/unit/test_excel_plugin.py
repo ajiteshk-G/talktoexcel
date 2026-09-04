@@ -295,3 +295,59 @@ def test_ge_file_tag_processing(mock_ingest, mock_find_blob):
     assert "wb_user_biscuits_sheet1" in sanitized["parts"][0]["text"]
     assert "Biscuits_All India_Data.xlsx" in sanitized["parts"][0]["text"]
 
+
+@patch("app.excel_plugin.find_blob_in_dropzone")
+@patch("app.excel_plugin.ingest_file")
+def test_ge_file_tag_multipart_processing(mock_ingest, mock_find_blob):
+    """Verifies that multi-part GE file tags (where start and end tags are separate parts) are properly parsed and sanitized."""
+    mock_blob = MagicMock()
+    mock_blob.name = "app/101035735082402736336/4242517327179939840/Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv/0"
+    mock_blob.size = 3808970
+    mock_find_blob.return_value = mock_blob
+
+    mock_ingest.return_value = {
+        "status": "SUCCESS",
+        "sheets": [
+            {
+                "sheet_name": "Sheet1",
+                "table_name": "wb_u_101035735082402736_biscuits_sheet1",
+                "row_count": 32249,
+                "columns": ["district_code", "state", "sales_value"],
+            }
+        ],
+    }
+
+    # Simulate GE passing 3 separate parts
+    msg_dict = {
+        "role": "user",
+        "parts": [
+            {"text": "From the given sales file, do a trend analysis"},
+            {"text": "\n<start_of_user_uploaded_file: Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv, original_filename: Biscuits_All India_Data.xlsx, sheet_name: Sheet1>"},
+            {"text": "<end_of_user_uploaded_file: Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv>\n"},
+        ],
+    }
+
+    sanitized = sanitize_message_dict(msg_dict, user_id="101035735082402736336")
+    # Should have 2 parts: prompt and system notification
+    assert len(sanitized["parts"]) == 2
+    assert "From the given sales file" in sanitized["parts"][0]["text"]
+    assert "<start_of_user_uploaded_file:" not in sanitized["parts"][1]["text"]
+    assert "<end_of_user_uploaded_file:" not in sanitized["parts"][1]["text"]
+    assert "wb_u_101035735082402736_biscuits_sheet1" in sanitized["parts"][1]["text"]
+    assert "32,249" in sanitized["parts"][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_safe_load_artifacts_blocks_data_files():
+    """Verifies that SafeLoadArtifactsTool refuses to load raw CSV/spreadsheet data files."""
+    from app.agent import load_artifacts_tool
+
+    mock_context = MagicMock()
+    result = await load_artifacts_tool.run_async(
+        args={"artifact_names": ["Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv", "my_chart.png"]},
+        tool_context=mock_context,
+    )
+    assert result["artifact_names"] == ["my_chart.png"]
+    assert "Data files ['Biscuits_All India_Data.xlsx_Sheet1_Sheet1.csv'] must NOT be loaded" in result["status"]
+
+
