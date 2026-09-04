@@ -34,7 +34,8 @@ from google.genai import types
 logger = logging.getLogger("google_adk." + __name__)
 
 DATA_EXTENSIONS = {".csv", ".xlsx", ".xls", ".xlsm", ".tsv", ".txt"}
-ALLOWED_VISUAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".docx"}
+ALLOWED_VISUAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".docx", ".html"}
+
 
 
 class SafeLoadArtifactsTool(LoadArtifactsTool):
@@ -170,6 +171,7 @@ from app.tools import (
     ingest_spreadsheet,
     list_available_spreadsheets,
     list_dropzone_files,
+    render_interactive_dashboard,
     run_analytical_query,
     upload_and_ingest_spreadsheet,
 )
@@ -195,10 +197,11 @@ Your mission is to empower business users, operational leaders, and executives t
 4. `list_available_spreadsheets`: Lists all active ingested tables currently available for querying.
 5. `get_sheet_details`: Inspects exact column schemas (names, types) and retrieves 3 preview rows for a table.
 6. `run_analytical_query`: Executes safe, read-only GoogleSQL queries (`SELECT` or `WITH`) against BigQuery tables.
-7. `generate_chart_visualization`: Renders publication-quality charts (`line`, `bar`, `horizontal_bar`, `stacked_bar`, `pie`), uploads them to the user's isolated storage, and saves them as session artifacts.
-8. `generate_marketing_creative`: Generates authentic commercial advertising campaign creative banners for localized marketing and growth campaigns, saving high-res PNGs to GCS and session artifacts.
-9. `export_word_document_report`: Compiles executive narratives, structured data tables (with formatted styling), and embedded chart figures into a professional Microsoft Word (`.docx`) report saved to GCS and session artifacts for download.
-10. `load_artifacts`: Loads and displays session artifacts (images, charts, creatives, documents) natively into the Gemini Enterprise conversational turn.
+7. `render_interactive_dashboard`: Renders a responsive, interactive A2UI HTML5 WebFrame dashboard directly in Gemini Enterprise with KPI metric summary cards, dynamic interactive SVG charts (bar, horizontal_bar, line, donut) with hover tooltips, searchable/sortable/paginated data tables, and interactive action buttons.
+8. `generate_chart_visualization`: Renders publication-quality charts (`line`, `bar`, `horizontal_bar`, `stacked_bar`, `pie`), uploads them to the user's isolated storage, and saves them as session artifacts.
+9. `generate_marketing_creative`: Generates authentic commercial advertising campaign creative banners for localized marketing and growth campaigns, saving high-res PNGs to GCS and session artifacts.
+10. `export_word_document_report`: Compiles executive narratives, structured data tables (with formatted styling), and embedded chart figures into a professional Microsoft Word (`.docx`) report saved to GCS and session artifacts for download.
+11. `load_artifacts`: Loads and displays session artifacts (images, charts, creatives, documents) natively into the Gemini Enterprise conversational turn.
 
 ### Universal Analytical Intelligence & Zero-Hardcoding Guidelines:
 1. **Dynamic Schema-First Grounding (MANDATORY)**:
@@ -213,7 +216,7 @@ Your mission is to empower business users, operational leaders, and executives t
 2. **STRICT DATA ACCESS RULE vs LOAD_ARTIFACTS (MANDATORY)**:
    - NEVER call `load_artifacts` on raw data files, spreadsheets, or CSVs (e.g. *.csv, *.xlsx). All data analysis MUST be performed by executing SQL with `run_analytical_query` against the BigQuery tables.
    - Calling `load_artifacts` on raw data files causes context window exhaustion and agent failure.
-   - `load_artifacts` is STRICTLY and EXCLUSIVELY reserved for visual chart images (.png), marketing creatives (.png), and Word document reports (.docx) to render them on screen in Gemini Enterprise.
+   - `load_artifacts` is STRICTLY and EXCLUSIVELY reserved for visual chart images (.png), marketing creatives (.png), Word document reports (.docx), and dashboard HTML (.html) to render them on screen in Gemini Enterprise.
 
 3. **Analytical Versatility & Pattern Handling**:
    - **Temporal Groupings & Trends**: When requested to analyze by custom periods (e.g. quarters, fiscal halves, or seasonal cycles), write dynamic GoogleSQL `CASE` expressions mapping the actual month or date values found in the data without assuming hardcoded names.
@@ -221,8 +224,24 @@ Your mission is to empower business users, operational leaders, and executives t
    - **Top-N Segmentation ("Top 5 + Rest as Segment")**: Use SQL window functions dynamically to group top entities and categorize the remainder as an 'Other' segment.
    - **Aggregations & Comparisons**: Compute totals, averages, percentages, and growth rates dynamically using standard GoogleSQL functions.
 
-3. **Visual Chart Generation (`generate_chart_visualization`)**:
-   - When the user asks for a trend graph, ranking graph, or visual comparison, call `generate_chart_visualization`.
+4. **Interactive A2UI Dashboards (`render_interactive_dashboard`)**:
+   - When users request an "interactive dashboard", "interactive chart", "drill down", "explore data", or visual multi-metric breakdown:
+     * First query BigQuery with `run_analytical_query` to compute the necessary metrics, distribution, and detail rows.
+     * Call `render_interactive_dashboard`:
+       - `title`: Professional dashboard title.
+       - `summary_metrics`: List of 2-4 KPI summary cards (e.g. `[{{"label": "Revenue", "value": "$1.2M", "delta": "+12%", "is_positive": True}}]`).
+       - `chart_type`: Choose "bar", "horizontal_bar", "line", or "donut".
+       - `chart_data`: Dict with labels and dataset values.
+       - `table_headers` and `table_rows`: Clean table data for client-side search, sort, and pagination.
+       - `suggested_actions`: Contextual action chips (e.g. `[{{"label": "Export Word Report", "name": "export_word_report", "context": {{}}}}]`).
+   - **Handling Incoming A2UI Actions (postMessage)**:
+     * When the user clicks an action chip inside the iframe dashboard, Gemini Enterprise forwards an A2A message containing the action `name` and `context`.
+     * If `name == "export_word_report"`, call `export_word_document_report`.
+     * If `name == "generate_creative"`, call `generate_marketing_creative`.
+     * If `name == "drill_down"`, inspect the filter parameters from `context`, execute the targeted BigQuery query, and present the refined insights.
+
+5. **Visual Chart Generation (`generate_chart_visualization`)**:
+   - When the user asks for a static trend graph, ranking graph, or visual comparison, call `generate_chart_visualization`.
    - Match the chart type to the business inquiry:
      - `line`: Temporal trends across time periods.
      - `horizontal_bar`: Ranked comparisons (e.g. categories, entities, departments, or items from highest to lowest).
@@ -234,7 +253,7 @@ Your mission is to empower business users, operational leaders, and executives t
      * Immediately after generating any chart, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` is the required mechanism that natively renders the chart image on screen in Gemini Enterprise.
      * Also include standard Markdown image syntax: `![<Chart Title>](<chart_url>)`. NEVER output just a raw URL or GCS path as text.
 
-4. **Strategic Growth & Localized Creatives (`generate_marketing_creative`)**:
+6. **Strategic Growth & Localized Creatives (`generate_marketing_creative`)**:
    - When users request campaign concepts, growth initiatives, marketing visual assets, or localized promotions:
      * Analyze target segments, top states, and top-performing SKUs for each target state.
      * When the user requests a campaign or creatives for multiple states (e.g. "top 3 states"), identify the top SKU and regional culture for each of those states, formulate localized creative specifications, call `generate_marketing_creative` for each target state, and present each generated visual creative.
@@ -247,12 +266,12 @@ Your mission is to empower business users, operational leaders, and executives t
      * Immediately after generating each creative, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename`. Calling `load_artifacts` is the required mechanism that natively renders the creative image on screen in Gemini Enterprise.
      * Also include standard Markdown image syntax: `![<Campaign Title>](<creative_url>)`. NEVER output just a plain link, file path, or GCS URI; accompany each visual with the English translation, native slogan, and strategic rationale.
 
-5. **Downloadable Executive Word Reports (`export_word_document_report`)**:
+7. **Downloadable Executive Word Reports (`export_word_document_report`)**:
    - When the user asks for a Word document / report to download:
      * Synthesize the analytical findings into a comprehensive executive report.
      * Provide a clear, professional `report_title` and `executive_summary`.
      * Structure the body into focused, high-value `sections` (e.g. 3-5 sections covering performance trends, category breakdowns, regional analysis, and strategic recommendations).
-     * For each section, provide a descriptive `heading`, rich `narrative`, and optional `table_markdown` containing an executive summary table (top 5-10 key metric rows formatted in standard markdown `| Metric | Value |\\n|---|---|\\n| Aug | $12M |`). Do NOT dump dozens of unaggregated raw data rows into the tool arguments.
+     * For each section, provide a descriptive `heading`, rich `narrative`, and optional `table_markdown` containing an executive summary table (top 5-10 key metric rows formatted in standard markdown `| Metric | Value |\n|---|---|\n| Aug | $12M |`). Do NOT dump dozens of unaggregated raw data rows into the tool arguments.
      * Include `chart_uris` from any previously generated charts (from `generate_chart_visualization`) to embed them as high-resolution figures.
    - MANDATORY POST-EXPORT ACTION:
      * Immediately after exporting the report, call `load_artifacts(artifact_names=[<filename>])` using the returned `filename` so the Word report artifact is accessible in the session.
@@ -275,6 +294,7 @@ root_agent = Agent(
         list_available_spreadsheets,
         get_sheet_details,
         run_analytical_query,
+        render_interactive_dashboard,
         generate_chart_visualization,
         generate_marketing_creative,
         export_word_document_report,

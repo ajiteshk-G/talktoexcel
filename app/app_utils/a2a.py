@@ -47,6 +47,11 @@ if TYPE_CHECKING:
 _ADK_AGENT_EXECUTOR_EXTENSION_URI = (
     "https://google.github.io/adk-docs/a2a/a2a-extension/"
 )
+_A2UI_V08_EXTENSION_URI = "https://a2ui.org/a2a-extension/a2ui/v0.8"
+_A2UI_V08_CATALOG_URI = "https://a2ui.org/specification/v0_8/standard_catalog_definition.json"
+_A2UI_V08_GE_CUSTOM_CATALOG_URI = (
+    "https://www.gstatic.com/vertexaisearch/a2ui/v0_8/gemini_enterprise_custom_catalog.json"
+)
 
 
 def _default_capabilities() -> AgentCapabilities:
@@ -58,8 +63,19 @@ def _default_capabilities() -> AgentCapabilities:
                 uri=_ADK_AGENT_EXECUTOR_EXTENSION_URI,
                 description=("Ability to use the new agent executor implementation"),
             ),
+            AgentExtension(
+                uri=_A2UI_V08_EXTENSION_URI,
+                description=("Supports interactive A2UI surfaces including WebFrame components"),
+                params={
+                    "supportedCatalogIds": [
+                        _A2UI_V08_CATALOG_URI,
+                        _A2UI_V08_GE_CUSTOM_CATALOG_URI,
+                    ],
+                },
+            ),
         ],
     )
+
 
 
 def _resolve_app_url(app_url: str | None) -> str:

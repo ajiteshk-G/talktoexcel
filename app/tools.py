@@ -64,6 +64,8 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 import sqlparse
 
+from app.a2ui import build_webframe_surface, generate_dashboard_html
+
 from app.ingestion import (
     DATASET_ID,
     DEFAULT_TTL_HOURS,
@@ -1181,3 +1183,94 @@ async def export_word_document_report(
     except Exception as e:
         logger.exception(f"Word report export failed: {e}")
         return {"status": "ERROR", "error": str(e), "report_title": report_title}
+
+
+async def render_interactive_dashboard(
+    title: str,
+    summary_metrics: Optional[List[Dict[str, Any]]] = None,
+    chart_type: str = "bar",
+    chart_data: Optional[Dict[str, Any]] = None,
+    table_headers: Optional[List[str]] = None,
+    table_rows: Optional[List[List[Any]]] = None,
+    suggested_actions: Optional[List[Dict[str, Any]]] = None,
+    subtitle: Optional[str] = None,
+    height: int = 680,
+    tool_context: Optional[ToolContext] = None,
+) -> Dict[str, Any]:
+    """Renders a responsive, interactive A2UI HTML5 WebFrame dashboard in Gemini Enterprise.
+
+    The dashboard features:
+    - Executive KPI metric cards with change indicators
+    - Interactive SVG charts (bar, horizontal_bar, line, donut) with hover tooltips
+    - Searchable, sortable, and paginated data tables
+    - Suggested action chips that dispatch bidirectional postMessage events back to the agent
+
+    Args:
+        title: Main dashboard title (e.g. "Q3 Regional Revenue & Product Breakdown").
+        summary_metrics: Optional list of KPI card dicts, e.g.:
+            [{"label": "Total Revenue", "value": "$1,450,200", "delta": "+14.2%", "is_positive": True}]
+        chart_type: Type of chart ("bar", "horizontal_bar", "line", "donut").
+        chart_data: Dict containing labels and datasets:
+            {"labels": ["Jan", "Feb", "Mar"], "datasets": [{"label": "Revenue", "data": [120, 150, 180]}]}
+            or for donut: {"labels": ["Online", "Retail"], "values": [65, 35]}.
+        table_headers: Optional list of column names for the tabular viewer.
+        table_rows: Optional 2D list of row values.
+        suggested_actions: Optional list of action buttons that dispatch A2UI actions back to the agent:
+            [{"label": "Export Word Report", "name": "export_word_report", "context": {}}].
+        subtitle: Optional descriptive subtitle.
+        height: Sizing in pixels (default: 680).
+        tool_context: ToolContext for user session identity and artifact persistence.
+
+    Returns:
+        Dict containing status, user_id, title, chart_type, surface_id, a2ui_payload, and confirmation message.
+    """
+    user_slug = resolve_user_id(tool_context)
+    try:
+        html_content = generate_dashboard_html(
+            title=title,
+            summary_metrics=summary_metrics,
+            chart_type=chart_type,
+            chart_data=chart_data,
+            table_headers=table_headers,
+            table_rows=table_rows,
+            suggested_actions=suggested_actions,
+            subtitle=subtitle,
+        )
+
+        a2ui_payload = build_webframe_surface(
+            html_content=html_content,
+            height=height,
+        )
+        surface_id = a2ui_payload[0]["beginRendering"]["surfaceId"]
+
+        # Persist HTML dashboard as an ADK session artifact if tool_context supports it
+        filename = f"dashboard_{re.sub(r'[^a-zA-Z0-9]', '_', title).strip('_').lower()[:25]}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.html"
+        if tool_context and hasattr(tool_context, "save_artifact"):
+            try:
+                part = types.Part.from_bytes(
+                    data=html_content.encode("utf-8"),
+                    mime_type="text/html",
+                )
+                await tool_context.save_artifact(filename=filename, artifact=part)
+                logger.info(f"Saved interactive dashboard artifact '{filename}'.")
+            except Exception as art_err:
+                logger.warning(f"Could not save dashboard artifact '{filename}': {art_err}")
+
+        return {
+            "status": "SUCCESS",
+            "user_id": user_slug,
+            "title": title,
+            "chart_type": chart_type,
+            "surface_id": surface_id,
+            "a2ui_payload": a2ui_payload,
+            "artifact_filename": filename,
+            "message": (
+                f"Successfully rendered interactive A2UI dashboard '{title}' ({chart_type} chart, "
+                f"{len(summary_metrics or [])} KPI cards, {len(table_rows or [])} data rows). "
+                f"Surface '{surface_id}' dispatched to Gemini Enterprise."
+            ),
+        }
+    except Exception as e:
+        logger.exception(f"Interactive dashboard rendering failed: {e}")
+        return {"status": "ERROR", "error": str(e), "title": title}
+
