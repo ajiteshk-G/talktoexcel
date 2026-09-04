@@ -104,23 +104,25 @@ def find_blob_in_dropzone(
     user_id: Optional[str] = None,
     bucket_name: str = DROPZONE_BUCKET,
 ) -> Optional[storage.Blob]:
-    """Dynamically finds a blob in the dropzone bucket with ZERO hardcoding:
-    1. If a direct gs:// URI is given, checks if that blob exists.
+    """Dynamically finds a blob in the dropzone bucket with strict user isolation:
+    1. If a direct gs:// URI is given, checks if that blob exists via get_blob.
     2. Checks user-specific folder: gs://{bucket}/{user_id}/{filename}
     3. Checks root of bucket: gs://{bucket}/{filename}
-    4. Searches all blobs in the dropzone bucket for a matching filename (size > 100 bytes).
+    4. Scoped search: ONLY within the user's isolated folder if user_id is provided.
+       Never search across other users' folders!
     """
     storage_client = storage.Client(project=PROJECT_ID)
     bucket = storage_client.bucket(bucket_name)
 
+    # 1. Direct gs:// URI check
     if filename_or_uri.startswith("gs://"):
         path_without_scheme = filename_or_uri[5:]
         parts = path_without_scheme.split("/", 1)
         b_name = parts[0]
         blob_path = parts[1] if len(parts) > 1 else ""
         if b_name == bucket_name:
-            b = bucket.blob(blob_path)
-            if b.exists() and (b.size or 0) > 100:
+            b = bucket.get_blob(blob_path)
+            if b and (b.size or 0) > 0:
                 return b
         filename_or_uri = os.path.basename(blob_path)
 
@@ -137,41 +139,36 @@ def find_blob_in_dropzone(
         base_no_ext = os.path.splitext(clean_filename)[0]
         candidates.append(f"{base_no_ext}.csv")
 
-    # Check user-specific folder if user_id is provided
+    # 2. Check user-specific folder directly
     if user_id:
         user_slug = sanitize_user_id(user_id)
         for fname in candidates:
-            b = bucket.blob(f"{user_slug}/{fname}")
-            if b.exists() and (b.size or 0) > 100:
+            b = bucket.get_blob(f"{user_slug}/{fname}")
+            if b and (b.size or 0) > 0:
                 return b
 
-    # Check root of dropzone bucket
+    # 3. Check root of dropzone bucket
     for fname in candidates:
-        b = bucket.blob(fname)
-        if b.exists() and (b.size or 0) > 100:
+        b = bucket.get_blob(fname)
+        if b and (b.size or 0) > 0:
             return b
 
-    # Dynamic search across dropzone bucket for matching filename
+    # 4. Scoped search: ONLY within user's folder if user_id is provided
     try:
-        blobs = list(storage_client.list_blobs(bucket, max_results=200))
+        search_prefix = f"{sanitize_user_id(user_id)}/" if user_id else ""
+        blobs = list(storage_client.list_blobs(bucket, prefix=search_prefix, max_results=100))
         for fname in candidates:
             fname_lower = fname.lower()
             for b in blobs:
-                if (b.size or 0) <= 100:
+                if (b.size or 0) <= 0:
                     continue
-                b_name_lower = b.name.lower()
                 b_base = os.path.basename(b.name).lower()
-                # 1. Direct basename match
                 if b_base == fname_lower:
                     return b
-                # 2. ADK artifact path with version suffix /0 (e.g. app/.../filename/0)
                 if b_base.isdigit():
                     parent_part = b.name.rstrip("/0123456789").split("/")[-1].lower()
                     if parent_part == fname_lower or parent_part.startswith(fname_lower):
                         return b
-                # 3. Filename contained as path segment
-                if f"/{fname_lower}/" in f"/{b_name_lower}/" or f"/{fname_lower}" in b_name_lower:
-                    return b
     except Exception as e:
         logger.warning(f"Dropzone search encountered error: {e}")
 
@@ -284,8 +281,8 @@ def download_from_gcs(gcs_uri: str, local_dest: str, user_id: Optional[str] = No
 
     storage_client = storage.Client(project=PROJECT_ID)
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    if not blob.exists() or (blob.size or 0) <= 100:
+    blob = bucket.get_blob(blob_name)
+    if not blob or (blob.size or 0) <= 0:
         fallback_blob = find_blob_in_dropzone(blob_name, user_id=user_id, bucket_name=bucket_name)
         if fallback_blob:
             blob = fallback_blob
