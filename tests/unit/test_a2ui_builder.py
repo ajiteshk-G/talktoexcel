@@ -14,14 +14,17 @@
 
 """Unit tests for A2UI surface payload builders and catalog invariants."""
 
+import json
 import pytest
 from app.a2ui.builder import (
     build_v09_canvas_surface,
     build_webframe_surface,
+    create_a2ui_inline_part,
     wrap_messages_as_a2a_parts,
 )
 from app.a2ui.catalog import (
     A2UI_MIME_TYPE,
+    A2UI_V08_GE_CUSTOM_CATALOG_URI,
     A2UI_V08_STANDARD_CATALOG_URI,
     A2UI_V09_COMPOSITE_CATALOG_URI,
     COMPONENT_CANVAS,
@@ -40,6 +43,8 @@ def test_build_webframe_surface_structure():
         html_content=html_content,
         surface_id=surface_id,
         height=620,
+        title="Vendor Spend Overview",
+        subtitle="Ad-hoc Financial Drilldown",
     )
 
     assert len(messages) == 2
@@ -48,7 +53,7 @@ def test_build_webframe_surface_structure():
     begin_rendering = messages[0].get("beginRendering")
     assert begin_rendering is not None
     assert begin_rendering["surfaceId"] == surface_id
-    assert begin_rendering["catalogId"] == A2UI_V08_STANDARD_CATALOG_URI
+    assert begin_rendering["catalogId"] == A2UI_V08_GE_CUSTOM_CATALOG_URI
     root_id = begin_rendering["root"]
     assert root_id == "iframe_root"
 
@@ -57,21 +62,34 @@ def test_build_webframe_surface_structure():
     assert surface_update is not None
     assert surface_update["surfaceId"] == surface_id
     components = surface_update["components"]
-    assert len(components) == 2
+    assert len(components) == 1
 
     # Invariant: root component ID matches byte-for-byte
     root_comp = components[0]
     assert root_comp["id"] == root_id
-    assert COMPONENT_COLUMN in root_comp["component"]
-    assert root_comp["component"][COMPONENT_COLUMN]["alignment"] == "stretch"
-
-    # Invariant: child WebFrameSrcdoc component structure
-    webframe_comp = components[1]
-    assert webframe_comp["id"] == "iframe_widget"
-    assert COMPONENT_WEB_FRAME_SRCDOC in webframe_comp["component"]
-    wf_props = webframe_comp["component"][COMPONENT_WEB_FRAME_SRCDOC]
+    assert COMPONENT_WEB_FRAME_SRCDOC in root_comp["component"]
+    wf_props = root_comp["component"][COMPONENT_WEB_FRAME_SRCDOC]
     assert wf_props["htmlContent"]["literalString"] == html_content
     assert wf_props["height"] == 620
+    assert wf_props["cardTitle"] == "Vendor Spend Overview"
+    assert wf_props["cardDescription"] == "Ad-hoc Financial Drilldown"
+    assert wf_props["cardIcon"] == "analytics"
+    assert wf_props["autoOpen"] is True
+
+
+def test_create_a2ui_inline_part():
+    """Verify create_a2ui_inline_part packages messages into Discovery Engine Assistant Service envelope."""
+    msg = {"beginRendering": {"surfaceId": "s1", "root": "r1"}}
+    part = create_a2ui_inline_part(msg)
+
+    assert part.inline_data is not None
+    assert part.inline_data.mime_type == "text/plain"
+    raw_text = part.inline_data.data.decode("utf-8")
+    assert raw_text.startswith("<a2a_datapart_json>")
+    assert raw_text.endswith("</a2a_datapart_json>")
+    inner = json.loads(raw_text[len("<a2a_datapart_json>"):-len("</a2a_datapart_json>")])
+    assert inner["metadata"]["mimeType"] == A2UI_MIME_TYPE
+    assert inner["data"] == msg
 
 
 def test_build_webframe_surface_empty_error():

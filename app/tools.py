@@ -64,7 +64,11 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 import sqlparse
 
-from app.a2ui import build_webframe_surface, generate_dashboard_html
+from app.a2ui import (
+    build_webframe_surface,
+    create_a2ui_inline_part,
+    generate_dashboard_html,
+)
 
 from app.ingestion import (
     DATASET_ID,
@@ -1240,14 +1244,20 @@ async def render_interactive_dashboard(
         a2ui_payload = build_webframe_surface(
             html_content=html_content,
             height=height,
+            title=title,
+            subtitle=subtitle,
         )
         surface_id = a2ui_payload[0]["beginRendering"]["surfaceId"]
 
-        # Format A2UI payload into <a2a_datapart_json> envelopes for Gemini Enterprise rendering
-        datapart_blocks = "\n".join([
-            f'<a2a_datapart_json>{{"data": {json.dumps(msg)}, "metadata": {{"mimeType": "application/json+a2ui"}}}}</a2a_datapart_json>'
-            for msg in a2ui_payload
-        ])
+        # Package A2UI messages into inline_data parts with application/json+a2ui MIME envelope
+        # and store in tool_context.state for delivery via after_model_callback
+        a2ui_parts = [create_a2ui_inline_part(msg) for msg in a2ui_payload]
+        if tool_context is not None and hasattr(tool_context, "state") and tool_context.state is not None:
+            pending = tool_context.state.get("pending_a2ui_data") or []
+            if not isinstance(pending, list):
+                pending = []
+            pending.extend(a2ui_parts)
+            tool_context.state["pending_a2ui_data"] = pending
 
         return {
             "status": "SUCCESS",
@@ -1256,14 +1266,12 @@ async def render_interactive_dashboard(
             "chart_type": chart_type,
             "surface_id": surface_id,
             "a2ui_payload": a2ui_payload,
-            "a2a_datapart_blocks": datapart_blocks,
             "message": (
-                f"Successfully generated interactive A2UI dashboard '{title}' ({chart_type} chart, "
-                f"{len(summary_metrics or [])} KPI cards, {len(table_rows or [])} data rows).\n\n"
-                f"{datapart_blocks}\n\n"
-                "CRITICAL INSTRUCTION FOR MODEL: Output the above <a2a_datapart_json>...</a2a_datapart_json> "
-                "blocks verbatim in your response to render the interactive dashboard on screen in Gemini Enterprise. "
-                "Do NOT call load_artifacts."
+                f"Successfully generated and mounted interactive A2UI dashboard '{title}' "
+                f"({chart_type} chart, {len(summary_metrics or [])} KPI cards, {len(table_rows or [])} data rows). "
+                "The dashboard UI component has been injected into the chat stream automatically. "
+                "Provide a concise executive summary and key highlights of the data to the user. "
+                "DO NOT output raw UI markup, XML or JSON tags, and do NOT call load_artifacts."
             ),
         }
     except Exception as e:

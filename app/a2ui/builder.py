@@ -14,11 +14,15 @@
 
 """Payload builders for A2UI WebFrame and Canvas surfaces in Gemini Enterprise."""
 
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
+from google.genai import types
+
 from app.a2ui.catalog import (
     A2UI_MIME_TYPE,
+    A2UI_V08_GE_CUSTOM_CATALOG_URI,
     A2UI_V08_STANDARD_CATALOG_URI,
     A2UI_V09_COMPOSITE_CATALOG_URI,
     COMPONENT_CANVAS,
@@ -32,8 +36,10 @@ def build_webframe_surface(
     html_content: str,
     surface_id: Optional[str] = None,
     height: int = 650,
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
     root_id: str = "iframe_root",
-    webframe_id: str = "iframe_widget",
+    catalog_id: str = A2UI_V08_GE_CUSTOM_CATALOG_URI,
 ) -> List[Dict[str, Any]]:
     """Builds the canonical A2UI v0.8 message sequence (beginRendering + surfaceUpdate)
     for rendering an isolated, sandboxed WebFrameSrcdoc in Gemini Enterprise.
@@ -42,14 +48,17 @@ def build_webframe_surface(
     1. The root component ID declared in `beginRendering.root` MUST be byte-identical
        to the ID of the root component in `surfaceUpdate.components`.
     2. The `surfaceId` in `beginRendering` and `surfaceUpdate` MUST match.
-    3. The `htmlContent` property is passed as an A2UI literalString wrapper.
+    3. The `catalogId` points to the Gemini Enterprise custom catalog containing WebFrameSrcdoc.
+    4. The `htmlContent` property is passed as an A2UI literalString wrapper.
 
     Args:
         html_content: The full self-contained HTML5 document string.
         surface_id: Optional unique surface ID. If omitted, a unique ID is generated.
         height: Sizing in pixels (default: 650).
-        root_id: Component ID for the outer Column container.
-        webframe_id: Component ID for the WebFrameSrcdoc component.
+        title: Optional title for the triggering card / side panel header.
+        subtitle: Optional subtitle description.
+        root_id: Component ID for the root WebFrameSrcdoc component.
+        catalog_id: Catalog URI (default: A2UI_V08_GE_CUSTOM_CATALOG_URI).
 
     Returns:
         List of two A2UI message dictionaries: [beginRendering, surfaceUpdate].
@@ -63,8 +72,19 @@ def build_webframe_surface(
     begin_rendering = {
         "beginRendering": {
             "surfaceId": surface_id,
-            "catalogId": A2UI_V08_STANDARD_CATALOG_URI,
+            "catalogId": catalog_id,
             "root": root_id,
+        }
+    }
+
+    webframe_component: Dict[str, Any] = {
+        COMPONENT_WEB_FRAME_SRCDOC: {
+            "htmlContent": {"literalString": html_content},
+            "height": height,
+            "cardTitle": title or "Interactive Analytics Dashboard",
+            "cardDescription": subtitle or "Ad-hoc Excel Analytical Breakdown",
+            "cardIcon": "analytics",
+            "autoOpen": True,
         }
     }
 
@@ -74,21 +94,7 @@ def build_webframe_surface(
             "components": [
                 {
                     "id": root_id,
-                    "component": {
-                        COMPONENT_COLUMN: {
-                            "children": {"explicitList": [webframe_id]},
-                            "alignment": "stretch",
-                        }
-                    },
-                },
-                {
-                    "id": webframe_id,
-                    "component": {
-                        COMPONENT_WEB_FRAME_SRCDOC: {
-                            "htmlContent": {"literalString": html_content},
-                            "height": height,
-                        }
-                    },
+                    "component": webframe_component,
                 },
             ],
         }
@@ -106,6 +112,29 @@ def build_webframe_surface(
     ), "surfaceId must be identical across beginRendering and surfaceUpdate"
 
     return [begin_rendering, surface_update]
+
+
+def create_a2ui_inline_part(msg: Dict[str, Any]) -> types.Part:
+    """Wraps an individual A2UI message into a types.Part with inline_data
+    and text/plain MIME type matching the Discovery Engine Assistant Service envelope.
+
+    Args:
+        msg: A single A2UI message dictionary (e.g. beginRendering or surfaceUpdate).
+
+    Returns:
+        types.Part carrying the encoded A2A DataPart envelope.
+    """
+    wrapped_payload = {
+        "data": msg,
+        "metadata": {"mimeType": A2UI_MIME_TYPE},
+    }
+    raw_envelope = f"<a2a_datapart_json>{json.dumps(wrapped_payload)}</a2a_datapart_json>".encode("utf-8")
+    return types.Part(
+        inline_data=types.Blob(
+            data=raw_envelope,
+            mime_type="text/plain",
+        )
+    )
 
 
 def build_v09_canvas_surface(

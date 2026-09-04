@@ -17,6 +17,7 @@
 from app.a2ui.builder import (
     build_v09_canvas_surface,
     build_webframe_surface,
+    create_a2ui_inline_part,
     wrap_messages_as_a2a_parts,
 )
 from app.a2ui.catalog import (
@@ -52,6 +53,7 @@ __all__ = [
     "COMPONENT_WEB_FRAME_URL",
     "build_v09_canvas_surface",
     "build_webframe_surface",
+    "create_a2ui_inline_part",
     "generate_dashboard_html",
     "wrap_messages_as_a2a_parts",
 ]

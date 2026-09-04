@@ -16,7 +16,9 @@
 
 from unittest.mock import AsyncMock, MagicMock
 import pytest
+from google.genai import types
 from app.a2ui.templates.dashboard import generate_dashboard_html
+from app.agent import a2ui_after_model_callback
 from app.tools import render_interactive_dashboard
 
 
@@ -102,6 +104,7 @@ async def test_render_interactive_dashboard_tool_execution():
     mock_context.session = MagicMock()
     mock_context.session.user_id = "user_analyst_01"
     mock_context.save_artifact = AsyncMock()
+    mock_context.state = {}
 
     result = await render_interactive_dashboard(
         title="Executive Performance Summary",
@@ -140,8 +143,52 @@ async def test_render_interactive_dashboard_tool_execution():
     # Verify save_artifact is NOT called for HTML dashboards (prevents Unsupported attachment in GE)
     assert not mock_context.save_artifact.called
 
-    # Verify formatted a2a_datapart_blocks are present for GE inline rendering
-    assert "a2a_datapart_blocks" in result
-    assert "<a2a_datapart_json>" in result["a2a_datapart_blocks"]
-    assert "</a2a_datapart_json>" in result["a2a_datapart_blocks"]
-    assert "application/json+a2ui" in result["a2a_datapart_blocks"]
+    # Verify message does NOT leak raw <a2a_datapart_json> XML into model text
+    assert "<a2a_datapart_json>" not in result["message"]
+    assert "</a2a_datapart_json>" not in result["message"]
+
+    # Verify pending_a2ui_data was stored in context state as types.Part objects
+    assert "pending_a2ui_data" in mock_context.state
+    pending_parts = mock_context.state["pending_a2ui_data"]
+    assert len(pending_parts) == 2
+    for part in pending_parts:
+        assert isinstance(part, types.Part)
+        assert part.inline_data is not None
+        assert part.inline_data.mime_type == "text/plain"
+        data_str = part.inline_data.data.decode("utf-8")
+        assert data_str.startswith("<a2a_datapart_json>")
+        assert data_str.endswith("</a2a_datapart_json>")
+        assert "application/json+a2ui" in data_str
+
+
+def test_a2ui_after_model_callback():
+    """Verify a2ui_after_model_callback injects pending A2UI parts and cleans text."""
+    # 1. Test injection of pending A2UI parts
+    mock_part = types.Part(
+        inline_data=types.Blob(
+            data=b'<a2a_datapart_json>{"metadata":{"mimeType":"application/json+a2ui"}}</a2a_datapart_json>',
+            mime_type="text/plain",
+        )
+    )
+    mock_ctx = MagicMock()
+    mock_ctx.state = {"pending_a2ui_data": [mock_part]}
+
+    text_part = types.Part.from_text(text="Here is your dashboard: <a2a_datapart_json>{\"leak\": true}</a2a_datapart_json> enjoy!")
+    mock_response = MagicMock()
+    mock_response.content = types.Content(parts=[text_part], role="model")
+    mock_response.custom_metadata = {}
+
+    a2ui_after_model_callback(mock_ctx, mock_response)
+
+    # State cleared
+    assert mock_ctx.state["pending_a2ui_data"] is None
+
+    # Part injected
+    assert len(mock_response.content.parts) == 2
+    assert mock_response.content.parts[1] == mock_part
+
+    # Metadata set
+    assert mock_response.custom_metadata.get("a2a:response") is True
+
+    # Accidental tag cleansed from text
+    assert mock_response.content.parts[0].text == "Here is your dashboard:  enjoy!"

@@ -24,6 +24,7 @@ from google.adk.models import Gemini
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 import json
 import logging
+import re
 from typing import Any
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool, _as_safe_part_for_llm
@@ -234,10 +235,11 @@ Your mission is to empower business users, operational leaders, and executives t
        - `chart_data`: Dict with labels and dataset values.
        - `table_headers` and `table_rows`: Clean table data for client-side search, sort, and pagination.
        - `suggested_actions`: Contextual action chips (e.g. `[{{"label": "Export Word Report", "name": "export_word_report", "context": {{}}}}]`).
-      * **CRITICAL RENDERING ON SCREEN**:
-        - `render_interactive_dashboard` returns `<a2a_datapart_json>` blocks containing the A2UI surface payload.
-        - You MUST include the `<a2a_datapart_json>...</a2a_datapart_json>` blocks verbatim in your final response. Gemini Enterprise uses these tags to render the live interactive dashboard directly in the chat interface.
-        - NEVER call `load_artifacts` for interactive dashboards! Dashboards are live UI components rendered via `<a2a_datapart_json>`, NOT file attachments. Calling `load_artifacts` on a dashboard will cause an "Unsupported attachment" error.
+      * **CRITICAL RENDERING IN GEMINI ENTERPRISE**:
+        - Calling `render_interactive_dashboard` automatically mounts and renders the interactive UI iframe in the Gemini Enterprise interface.
+        - In your textual response, provide a helpful executive summary, key insights, and instructions on how to interact with the dashboard.
+        - **NEVER** output `<a2a_datapart_json>` tags, raw JSON code blocks, or XML markup in your text response! The UI is delivered seamlessly out-of-band.
+        - **NEVER** call `load_artifacts` for interactive dashboards! Dashboards are rendered natively via the A2UI protocol, NOT as file attachments. Calling `load_artifacts` on a dashboard will cause an "Unsupported attachment" error.
     - **Handling Incoming A2UI Actions (postMessage)**:
       * When the user clicks an action chip inside the iframe dashboard, Gemini Enterprise forwards an A2A message containing the action `name` and `context`.
       * If `name == "export_word_report"`, call `export_word_document_report`.
@@ -282,6 +284,60 @@ Your mission is to empower business users, operational leaders, and executives t
      * Present the direct download link and document summary in your response.
 """
 
+def a2ui_after_model_callback(
+    callback_context: Any,
+    llm_response: Any,
+) -> None:
+    """Injects pending A2UI inline_data parts into the LLM response content,
+    marks custom_metadata for A2A delivery, and cleanses any accidental raw tags from text.
+    """
+    if callback_context is None or llm_response is None:
+        return
+
+    # 1. Cleanse any accidental <a2a_datapart_json> tags from model text parts
+    if getattr(llm_response, "content", None) and getattr(llm_response.content, "parts", None):
+        for part in llm_response.content.parts:
+            if hasattr(part, "text") and part.text:
+                cleaned_text = re.sub(
+                    r"<a2a_datapart_json>.*?</a2a_datapart_json>",
+                    "",
+                    part.text,
+                    flags=re.DOTALL,
+                ).strip()
+                cleaned_text = re.sub(
+                    r"\[https?://[^\s\]]+\]\(https?://[^\s\)]+\)",
+                    "",
+                    cleaned_text,
+                ).strip()
+                part.text = cleaned_text
+
+    # 2. Check for pending A2UI parts from tool execution
+    state = getattr(callback_context, "state", None)
+    if state is None:
+        return
+
+    pending_data_list = state.get("pending_a2ui_data")
+    if not pending_data_list:
+        return
+
+    # Clear pending state
+    state["pending_a2ui_data"] = None
+
+    # Inject into llm_response.content.parts
+    if not getattr(llm_response, "content", None):
+        llm_response.content = types.Content(parts=list(pending_data_list), role="model")
+    elif not getattr(llm_response.content, "parts", None):
+        llm_response.content.parts = list(pending_data_list)
+    else:
+        llm_response.content.parts.extend(pending_data_list)
+
+    # Mark custom_metadata for A2A response handling
+    if hasattr(llm_response, "custom_metadata"):
+        if llm_response.custom_metadata is None:
+            llm_response.custom_metadata = {}
+        llm_response.custom_metadata["a2a:response"] = True
+
+
 root_agent = Agent(
     name="root_agent",
     model=Gemini(
@@ -305,6 +361,7 @@ root_agent = Agent(
         load_artifacts_tool,
     ],
     before_model_callback=before_model_callback_hook,
+    after_model_callback=a2ui_after_model_callback,
 )
 
 excel_plugin = ExcelSpreadsheetIngestionPlugin()
